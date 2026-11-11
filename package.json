@@ -1,0 +1,13 @@
+{
+  "name": "macro-log",
+  "version": "1.0.0",
+  "description": "Simple, beautiful macro and meal tracking PWA with a weekly coach.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test tests/*.test.mjs",
+    "icons": "python3 tools/make-icons.py"
+  },
+  "license": "MIT"
+}

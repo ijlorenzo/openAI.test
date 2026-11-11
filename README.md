@@ -8,7 +8,8 @@ A simple, beautiful macro and meal tracker in the spirit of Carbon Diet Coach. I
 
 - **Onboarding** estimates your maintenance calories (Mifflin–St Jeor × activity) and sets calorie and macro targets for your goal and pace.
 - **Today** shows a calorie ring, protein/carb/fat bars, and your meals (breakfast, lunch, dinner, snacks). Swipe through days with the arrows.
-- **Logging** from a bundled database of ~150 common foods, your recent foods, custom foods you create, or a quick macro entry. Adjust servings with a stepper or type a decimal.
+- **Logging** from a built-in database of 8,000+ generic foods (USDA Standard Reference, public domain) plus ~150 curated everyday foods with friendly names and servings, your recent foods, custom foods you create, or a quick macro entry. Adjust servings with a stepper or type a decimal.
+- **Forgiving search**: plurals ("eggs" finds Egg), typos ("chiken"), synonyms ("pb", "yoghurt", "prawns"), any word order. When nothing local matches, it searches Open Food Facts automatically.
 - **Barcode scanning** with the camera (ZXing, runs on-device) looks products up in **Open Food Facts**, with a per-serving / per-100 g toggle. Custom foods remember their barcode, and anything you have looked up before works offline.
 - **Online search** of Open Food Facts from the add sheet when the bundled list does not have what you ate. Add a free USDA FoodData Central key in Settings to search US branded products too.
 - **Weight trend** with a smoothed trend line over 30/90/all days.
@@ -41,7 +42,9 @@ manifest.webmanifest    PWA manifest
 sw.js                   offline cache (bump CACHE when you ship changes)
 src/app.js              views, sheets, events
 src/nutrition.js        pure math: BMR/TDEE, macro split, trend, weekly check-in
-src/foods.js            bundled food database + search
+src/foods.js            curated everyday foods
+src/search.js           forgiving search (stemming, typos, aliases, ranking)
+data/foods-sr.json      USDA SR28 generic foods, built by tools/build-sr.py
 src/lookup.js           Open Food Facts + USDA lookups and normalizers
 src/store.js            localStorage persistence, import/export
 vendor/zxing.min.js     ZXing barcode decoder (Apache 2.0)
@@ -50,6 +53,8 @@ tools/make-icons.py     regenerates icons/ (needs Pillow)
 ```
 
 ## Food databases
+
+- **USDA Standard Reference (SR28)** is bundled as `data/foods-sr.json` (about 190 KB compressed) and loaded the first time you open the add sheet, then cached offline. Rebuild it with `tools/build-sr.py`; the docstring explains where the source files come from. It is US public domain.
 
 - **Open Food Facts** is used for barcode lookups and online search. It is free and needs no key. The app identifies itself with `app_name` / `app_version` query parameters as their docs ask of web apps. Their read limit is 100 product lookups per minute per user and search is much more limited, so search is a button rather than live-as-you-type.
 - **USDA FoodData Central** is optional. Paste a free key from api.data.gov into Settings and it is added to barcode lookups (US branded products) and search. The key stays in your browser's storage.

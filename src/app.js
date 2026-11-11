@@ -1,7 +1,9 @@
 import * as N from './nutrition.js';
 import { FOODS } from './foods.js';
 import { indexFood, search } from './search.js';
-import { load, save, reset, uid, MEALS, exportJSON, importJSON } from './store.js';
+import { load, save, reset, uid, MEALS, exportJSON, importJSON, touch, bury } from './store.js';
+import { createSync } from './sync.js';
+import { GOOGLE_CLIENT_ID } from './config.js';
 import { lookupBarcode, searchOnline, normalizeBarcode } from './lookup.js';
 
 /* ------------------------------------------------------------------ */
@@ -23,7 +25,17 @@ const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast-root');
 
-function commit() { save(S); render(); }
+/* ---- Google Drive sync (opt-in; each person's data lives in their own Drive) ---- */
+const CLIENT_ID_KEY = 'macrolog.googleClientId';
+const clientId = () => { try { return localStorage.getItem(CLIENT_ID_KEY) || GOOGLE_CLIENT_ID; } catch { return GOOGLE_CLIENT_ID; } };
+const sync = createSync({
+  getState: () => S,
+  setState: (next, { silent } = {}) => { S = next; save(S); if (!silent) render(); },
+  getClientId: clientId,
+  onStatus: () => updateSyncUI(),
+});
+
+function commit() { save(S); render(); sync.scheduleSync(); }
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -124,7 +136,8 @@ function renderOnboarding() {
           <h1>Macro Log</h1>
           <p class="lead">Track your meals and macros in seconds. Every week your coach checks your progress and adjusts your calories, so you keep moving toward your goal.</p>
         </div>
-        <div class="actions"><button class="btn primary" data-act="onb-next">Get started</button></div>
+        <div class="actions" style="flex-direction:column"><button class="btn primary" data-act="onb-next">Get started</button>
+          ${clientId() ? `<button class="btn ghost" data-act="sync-connect">Already using Macro Log? Restore from Google Drive</button>` : ''}</div>
       </section>`;
   }
   if (step === 1) {
@@ -251,6 +264,7 @@ function renderToday() {
       </div>
     </header>
 
+    ${syncPillHTML()}
     <section class="card">
       <div class="summary">
         <div class="ring ${over ? 'over' : ''}">
@@ -383,6 +397,56 @@ function calorieChart() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Sync UI                                                             */
+/* ------------------------------------------------------------------ */
+function fmtAgo(ts) {
+  if (!ts) return 'never';
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return fmtShort(N.toISODate(new Date(ts)));
+}
+function syncPillHTML() {
+  const st = sync.status();
+  if (st.state === 'needs-auth') return `<div class="syncpill" data-sync-pill><span><b>Drive sync paused.</b> Sign in again to keep syncing.</span><button data-act="sync-connect">Reconnect</button></div>`;
+  if (st.state === 'error') return `<div class="syncpill" data-sync-pill><span><b>Sync problem.</b> ${esc(st.message)}</span><button data-act="sync-now">Retry</button></div>`;
+  return `<span data-sync-pill hidden></span>`;
+}
+function syncCardHTML() {
+  const st = sync.status();
+  const hasLocalId = (() => { try { return !!localStorage.getItem(CLIENT_ID_KEY); } catch { return false; } })();
+  let body;
+  if (!clientId()) {
+    body = `<p class="small" style="margin-bottom:10px">Keep your data in a private folder of <b>your own Google Drive</b> and use the app on more than one device. This deployment has no Google client ID yet. Paste one here (see the setup guide in the repo's docs folder) or ask whoever hosts the app to add it.</p>
+      <form data-form="clientid" class="row" style="gap:8px"><input class="input" name="id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" autocapitalize="off" spellcheck="false" /><button class="btn secondary" type="submit" style="width:auto">Save</button></form>`;
+  } else if (st.state === 'off') {
+    body = `<p class="small" style="margin-bottom:12px">Your data is stored only on this device. Connect Google Drive to back it up to a private app folder in <b>your own</b> Drive and sync it across devices. Nothing is stored anywhere else.</p>
+      <button class="btn primary" data-act="sync-connect">Connect Google Drive</button>
+      ${st.message ? `<p class="small" style="margin-top:8px;color:var(--danger)">${esc(st.message)}</p>` : ''}
+      <p class="tiny muted" style="margin-top:10px">Asks only for the app's own folder in Drive. <a href="privacy.html" target="_blank" rel="noopener">Privacy</a>${hasLocalId ? ' · <button class="ghost" style="color:var(--accent);font-weight:600" data-act="clientid-clear">Clear client ID</button>' : ''}</p>`;
+  } else {
+    const label = st.state === 'syncing' ? 'Syncing…'
+      : st.state === 'needs-auth' ? 'Sign-in expired. Reconnect to keep syncing.'
+        : st.state === 'error' ? esc(st.message || 'Sync failed')
+          : `Connected${st.email ? ` as ${esc(st.email)}` : ''} · synced ${fmtAgo(st.lastSync)}`;
+    body = `<div class="syncstatus ${st.state}" style="margin-bottom:12px"><i class="dot"></i><span>${label}</span></div>
+      <div class="row" style="gap:8px">
+        ${st.state === 'needs-auth' ? `<button class="btn primary" data-act="sync-connect">Reconnect</button>` : `<button class="btn secondary" data-act="sync-now" ${st.state === 'syncing' ? 'disabled' : ''}>Sync now</button>`}
+        <button class="btn secondary" data-act="sync-disconnect">Disconnect</button>
+      </div>
+      <p class="tiny muted" style="margin-top:10px">Stored as one file in a private app folder of your Google Drive. Disconnecting keeps the data on this device.</p>`;
+  }
+  return `<div class="card-title">Sync</div>${body}`;
+}
+function updateSyncUI() {
+  const card = $app.querySelector('[data-sync-card]');
+  if (card) card.innerHTML = syncCardHTML();
+  const pill = $app.querySelector('[data-sync-pill]');
+  if (pill) pill.outerHTML = syncPillHTML();
+}
+
+/* ------------------------------------------------------------------ */
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 function renderSettings() {
@@ -396,6 +460,7 @@ function renderSettings() {
       <button class="setrow" data-act="sheet-targets"><span><div class="l">Daily targets</div><div class="h num">${T.kcal} kcal · P ${T.protein} · C ${T.carbs} · F ${T.fat}</div></span><span class="chev">›</span></button>
       <button class="setrow" data-act="sheet-profile"><span><div class="l">Profile & goal</div><div class="h">${N.GOALS[p.goal].label}${p.goal !== 'maintain' ? ` · ${p.ratePct}% / wk` : ''} · ${N.ACTIVITY[p.activity].label}</div></span><span class="chev">›</span></button>
     </section>
+    <section class="card" data-sync-card>${syncCardHTML()}</section>
     <section class="card">
       <div class="card-title">Preferences</div>
       <div class="field"><span>Units</span><div class="seg">
@@ -847,10 +912,12 @@ function sheetImport() {
 /* ------------------------------------------------------------------ */
 function addEntry(meal, food, servings, date = ui.date) {
   const m = N.scaleFood(food, servings);
-  const e = { id: uid(), meal, name: food.name, serving: food.serving, servings, foodId: food.id, per: { kcal: food.kcal, protein: food.protein, carbs: food.carbs, fat: food.fat }, ...m };
+  const e = { id: uid(), t: Date.now(), meal, name: food.name, serving: food.serving, servings, foodId: food.id, per: { kcal: food.kcal, protein: food.protein, carbs: food.carbs, fat: food.fat }, ...m };
   S.entries[date] = [...entriesFor(date), e];
+  touch(S, 'entries', e.id);
   if (food.id && !String(food.id).startsWith('quick')) {
     S.recents = [food.id, ...S.recents.filter((x) => x !== food.id)].slice(0, 30);
+    touch(S, 'recents');
   }
 }
 
@@ -925,6 +992,7 @@ document.addEventListener('click', (ev) => {
         if (i >= 0) {
           const m = N.scaleFood(chosen, servings);
           list[i] = { ...list[i], meal: sh.meal, servings, ...m };
+          touch(S, 'entries', sh.entryId);
         }
         toast('Updated');
       } else {
@@ -942,32 +1010,39 @@ document.addEventListener('click', (ev) => {
     }
     case 'entry-delete': {
       S.entries[sh.date] = entriesFor(sh.date).filter((e) => e.id !== sh.entryId);
+      if (!S.entries[sh.date].length) delete S.entries[sh.date];
+      bury(S, 'entries', sh.entryId);
       closeSheet(); commit(); toast('Removed'); break;
     }
     case 'custom-delete': {
       S.customFoods = S.customFoods.filter((f) => f.id !== el.dataset.id);
       S.recents = S.recents.filter((x) => x !== el.dataset.id);
-      save(S); ui.tab = 'custom'; openSheet({ type: 'add', meal: sh.meal }); toast('Deleted'); break;
+      bury(S, 'customFoods', el.dataset.id); touch(S, 'recents');
+      save(S); sync.scheduleSync(); ui.tab = 'custom'; openSheet({ type: 'add', meal: sh.meal }); toast('Deleted'); break;
     }
     case 'sheet-quick': openSheet({ type: 'quick', meal: sh.meal }); break;
     case 'sheet-custom': openSheet({ type: 'custom', meal: sh.meal, barcode: el.dataset.barcode || null }); break;
     case 'weight': openSheet({ type: 'weight', date: ui.view === 'today' ? ui.date : todayISO() }); break;
-    case 'weight-delete': delete S.weights[el.dataset.date]; closeSheet(); commit(); break;
+    case 'weight-delete': delete S.weights[el.dataset.date]; bury(S, 'weights', el.dataset.date); closeSheet(); commit(); break;
     case 'range': ui.range = Number(el.dataset.v); render(); break;
     case 'checkin': runCheckin(); break;
     case 'checkin-apply': {
       const r = sh.result;
-      S.targets = r.targets;
-      S.profile.weightKg = r.currentKg;
-      S.lastCheckin = todayISO();
+      S.targets = r.targets; touch(S, 'targets');
+      S.profile.weightKg = r.currentKg; touch(S, 'profile');
+      S.lastCheckin = todayISO(); touch(S, 'lastCheckin');
       S.checkins.push({ date: todayISO(), kcalBefore: r.kcalBefore, kcalAfter: r.kcalAfter, actualKg: r.actualKg, expectedKg: r.expectedKg, currentKg: r.currentKg });
       closeSheet(); commit(); toast(r.delta ? 'Targets updated' : 'Targets unchanged'); break;
     }
     case 'sheet-targets': openSheet({ type: 'targets' }); break;
     case 'sheet-profile': openSheet({ type: 'profile' }); break;
     case 'sheet-import': openSheet({ type: 'import' }); break;
-    case 'targets-recalc': S.targets = N.targetsFromProfile(S.profile); closeSheet(); commit(); toast('Recalculated'); break;
-    case 'units': S.profile.units = el.dataset.v; commit(); break;
+    case 'targets-recalc': S.targets = N.targetsFromProfile(S.profile); touch(S, 'targets'); closeSheet(); commit(); toast('Recalculated'); break;
+    case 'units': S.profile.units = el.dataset.v; touch(S, 'profile'); commit(); break;
+    case 'sync-connect': if (!sync.connect()) toast(sync.status().message || 'Add a Google client ID in Settings first'); break;
+    case 'sync-now': sync.syncNow().then((r) => toast(r ? 'Synced with Google Drive' : (sync.status().message || 'Sync paused. Reconnect to continue.'))); break;
+    case 'sync-disconnect': if (confirm('Disconnect Google Drive? Your data stays on this device and the file stays in your Drive.')) { sync.disconnect(); toast('Disconnected'); } break;
+    case 'clientid-clear': localStorage.removeItem(CLIENT_ID_KEY); render(); break;
     case 'theme': localStorage.setItem('macrolog.theme', el.dataset.v); applyTheme(el.dataset.v); render(); break;
     case 'export': download(`macrolog-${todayISO()}.json`, exportJSON(S)); toast('Backup exported'); break;
     case 'import-apply': {
@@ -977,7 +1052,7 @@ document.addEventListener('click', (ev) => {
       break;
     }
     case 'reset': {
-      if (confirm('Erase all data on this device? This cannot be undone.')) { reset(); S = load(); ui.onb = null; ui.view = 'today'; render(); }
+      if (confirm('Erase all data on this device? This cannot be undone. (Anything already synced to Google Drive stays there.)')) { reset(); try { localStorage.removeItem('macrolog.drive.token'); } catch { /* ignore */ } S = load(); ui.onb = null; ui.view = 'today'; sync.refreshStatus(); render(); }
       break;
     }
     case 'close': closeSheet(); break;
@@ -994,9 +1069,9 @@ document.addEventListener('click', (ev) => {
     case 'onb-back': readOnbInputs(); ui.onb.step = Math.max(0, ui.onb.step - 1); render(); break;
     case 'onb-finish': {
       const d = ui.onb.draft;
-      S.profile = { ...d };
-      S.targets = N.targetsFromProfile(d);
-      S.weights[todayISO()] = S.weights[todayISO()] ?? N.round1(d.weightKg);
+      S.profile = { ...d }; touch(S, 'profile');
+      S.targets = N.targetsFromProfile(d); touch(S, 'targets');
+      if (S.weights[todayISO()] == null) { S.weights[todayISO()] = N.round1(d.weightKg); touch(S, 'weights', todayISO()); }
       ui.onb = null; commit(); break;
     }
     default: break;
@@ -1043,24 +1118,29 @@ document.addEventListener('submit', (ev) => {
     addEntry(sh.meal, food, 1); closeSheet(); commit(); toast('Added');
   } else if (kind === 'custom') {
     const food = { id: 'custom-' + uid(), custom: true, name: g('name').trim(), serving: g('serving').trim(), kcal: num(g('kcal')), protein: num(g('protein')), carbs: num(g('carbs')), fat: num(g('fat')), tags: 'custom', barcode: normalizeBarcode(g('barcode')) || undefined };
-    S.customFoods = [food, ...S.customFoods]; save(S);
+    S.customFoods = [food, ...S.customFoods]; touch(S, 'customFoods', food.id); save(S); sync.scheduleSync();
     openSheet({ type: 'food', food, meal: sh.meal, servings: 1 }); toast('Food saved');
   } else if (kind === 'barcode') {
     const code = g('code');
     if (!normalizeBarcode(code)) { toast('Enter the digits under the barcode'); return; }
     onBarcode(code);
   } else if (kind === 'usda') {
-    S.usdaKey = String(g('key') || '').trim();
-    save(S); toast(S.usdaKey ? 'USDA key saved' : 'USDA key removed'); render();
+    S.usdaKey = String(g('key') || '').trim(); touch(S, 'usdaKey');
+    save(S); sync.scheduleSync(); toast(S.usdaKey ? 'USDA key saved' : 'USDA key removed'); render();
+  } else if (kind === 'clientid') {
+    const id = String(g('id') || '').trim();
+    if (!/\.apps\.googleusercontent\.com$/.test(id)) { toast('That does not look like a Google client ID'); return; }
+    try { localStorage.setItem(CLIENT_ID_KEY, id); } catch { /* ignore */ }
+    sync.refreshStatus(); render(); toast('Client ID saved');
   } else if (kind === 'weight') {
     const kg = fromDisplayW(num(g('w')));
     if (!(kg > 20 && kg < 400)) { toast('That weight looks off'); return; }
-    S.weights[g('date')] = Math.round(kg * 100) / 100;
+    S.weights[g('date')] = Math.round(kg * 100) / 100; touch(S, 'weights', g('date'));
     closeSheet(); commit(); toast('Weight saved');
   } else if (kind === 'targets') {
     const T = { kcal: r0(num(g('kcal'))), protein: r0(num(g('protein'))), carbs: r0(num(g('carbs'))), fat: r0(num(g('fat'))) };
     if (T.kcal < 800) { toast('Calories look too low'); return; }
-    S.targets = T; closeSheet(); commit(); toast('Targets saved');
+    S.targets = T; touch(S, 'targets'); closeSheet(); commit(); toast('Targets saved');
   } else if (kind === 'profile') {
     const p = { ...S.profile };
     p.sex = g('sex'); p.age = clamp(num(g('age')) || p.age, 13, 100);
@@ -1069,8 +1149,8 @@ document.addEventListener('submit', (ev) => {
     else p.heightCm = N.inToCm(num(g('ft')) * 12 + num(g('in'))) || p.heightCm;
     p.activity = g('activity'); p.goal = g('goal'); p.ratePct = num(g('ratePct'));
     if (p.goal === 'maintain') p.ratePct = 0;
-    S.profile = p;
-    if (g('recalc')) S.targets = N.targetsFromProfile(p);
+    S.profile = p; touch(S, 'profile');
+    if (g('recalc')) { S.targets = N.targetsFromProfile(p); touch(S, 'targets'); }
     closeSheet(); commit(); toast('Profile saved');
   }
 });
@@ -1081,7 +1161,15 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.sheet
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 applyTheme(localStorage.getItem('macrolog.theme') || 'auto');
+const redirectResult = sync.handleRedirect();
+sync.refreshStatus();
 render();
+if (redirectResult === 'connected') { toast('Google Drive connected'); sync.syncNow(); }
+else if (redirectResult === 'denied') toast(sync.status().message || 'Google sign-in failed');
+else if (sync.connected()) { if (sync.hasToken()) sync.syncNow({ reason: 'launch' }); else sync.maybeSilentRefresh(); }
+const resumeSync = () => { if (document.visibilityState === 'visible' && sync.connected()) { if (sync.hasToken()) sync.syncNow({ reason: 'resume' }); else sync.maybeSilentRefresh(); } };
+document.addEventListener('visibilitychange', resumeSync);
+window.addEventListener('online', resumeSync);
 if (S.profile) setTimeout(loadSR, 1500); // warm the food database after first paint
 // Roll the date over if the app stays open past midnight.
 setInterval(() => { const t = todayISO(); if (ui.date !== t && ui._autoDate !== false && fmtDate(ui.date) === 'Yesterday' && !ui.sheet) { ui.date = t; render(); } }, 60000);

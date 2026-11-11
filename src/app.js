@@ -1,5 +1,6 @@
 import * as N from './nutrition.js';
-import { searchFoods } from './foods.js';
+import { FOODS } from './foods.js';
+import { indexFood, search } from './search.js';
 import { load, save, reset, uid, MEALS, exportJSON, importJSON } from './store.js';
 import { lookupBarcode, searchOnline, normalizeBarcode } from './lookup.js';
 
@@ -405,7 +406,7 @@ function renderSettings() {
     </section>
     <section class="card">
       <div class="card-title">Food databases</div>
-      <p class="small" style="margin-bottom:10px">Barcode scanning and online search use <b>Open Food Facts</b> (free, no key). Add a free <b>USDA FoodData Central</b> key to also search US branded products.</p>
+      <p class="small" style="margin-bottom:10px">Search covers 8,000+ generic foods from the <b>USDA</b> Standard Reference database, built in and offline. Barcode scanning and online search use <b>Open Food Facts</b> (free, no key). Add a free <b>USDA FoodData Central</b> key to also search US branded products online.</p>
       <form data-form="usda" class="row" style="gap:8px">
         <input class="input" name="key" placeholder="USDA API key (optional)" value="${esc(S.usdaKey || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" />
         <button class="btn secondary" type="submit" style="width:auto">Save</button>
@@ -470,10 +471,38 @@ function sheetAdd(sh) {
     </div>`;
 }
 
-function allFoodsForSearch() { return S.customFoods; }
-function foodById(id) { return S.customFoods.find((f) => f.id === id) || S.foodCache[id] || searchFoods('').find((f) => f.id === id); }
+/* ---- Local food index: custom + curated + USDA SR28 (lazy loaded) ---- */
+const curatedIndex = FOODS.map((f) => indexFood({ ...f, curated: true }));
+let srIndex = [];
+const srById = new Map();
+let srLoad = null;
+function loadSR() {
+  if (srLoad) return srLoad;
+  srLoad = fetch('data/foods-sr.json').then((r) => r.json()).then((d) => {
+    const groups = d.groups || {};
+    srIndex = d.foods.map(([ndb, name, group, kcal, protein, carbs, fat, desc, grams]) => {
+      const per100 = { serving: '100 g', kcal, protein, carbs, fat };
+      let food;
+      if (desc && grams) {
+        const k = grams / 100;
+        food = { id: `sr-${ndb}`, source: 'sr', name, tags: groups[group] || '', serving: `${desc} (${grams} g)`, kcal: Math.round(kcal * k), protein: N.round1(protein * k), carbs: N.round1(carbs * k), fat: N.round1(fat * k), per100 };
+      } else {
+        food = { id: `sr-${ndb}`, source: 'sr', name, tags: groups[group] || '', ...per100 };
+      }
+      srById.set(food.id, food);
+      return indexFood(food);
+    });
+    if (ui.sheet?.type === 'add') { refreshResults(); maybeAutoOnline(); }
+  }).catch((e) => { console.warn('SR database failed to load', e); srLoad = null; });
+  return srLoad;
+}
+function localIndex() {
+  const custom = S.customFoods.map((f) => indexFood({ ...f, curated: true }));
+  return custom.concat(curatedIndex, srIndex);
+}
+function foodById(id) { return S.customFoods.find((f) => f.id === id) || S.foodCache[id] || srById.get(id) || FOODS.find((f) => f.id === id); }
 function cacheFood(food) {
-  if (!food || !food.source) return;
+  if (!food || !food.source || food.source === 'sr') return;
   delete S.foodCache[food.id];
   S.foodCache[food.id] = food;
   const keys = Object.keys(S.foodCache);
@@ -481,6 +510,7 @@ function cacheFood(food) {
 }
 function foodRow(f, act, idx) {
   const badge = f.source ? `<span class="badge">${f.source === 'off' ? 'Open Food Facts' : 'USDA'}</span>` : '';
+  void idx;
   return `<button class="food" data-act="${act}" data-id="${esc(f.id)}" data-idx="${idx ?? ''}">
       <span><div class="n">${esc(f.name)}${f.brand ? ` <span class="muted">· ${esc(f.brand)}</span>` : ''}</div><div class="s">${esc(f.serving)} · P ${f.protein} · C ${f.carbs} · F ${f.fat} ${badge}</div></span>
       <span class="kc num">${f.kcal}<small> kcal</small></span></button>`;
@@ -488,6 +518,7 @@ function foodRow(f, act, idx) {
 function onlineHTML(q) {
   if (q.length < 2) return '';
   const o = ui.online;
+  if ((!o || o.q !== q) && ui.autoOnlinePending === q) return `<div class="onlinebox"><p class="muted small" style="text-align:center">Searching online…</p></div>`;
   if (!o || o.q !== q) return `<div class="onlinebox"><button class="btn secondary" data-act="online-search">Search online for “${esc(q)}”</button><p class="tiny muted" style="margin-top:8px;text-align:center">Open Food Facts${S.usdaKey ? ' + USDA' : ''} · needs a connection</p></div>`;
   if (o.loading) return `<div class="onlinebox"><p class="muted small" style="text-align:center">Searching online…</p></div>`;
   if (o.error) return `<div class="onlinebox"><p class="small" style="text-align:center;color:var(--danger)">${esc(o.error)}</p><button class="btn secondary" style="margin-top:8px" data-act="online-search">Try again</button></div>`;
@@ -498,13 +529,14 @@ function onlineHTML(q) {
 function resultsHTML() {
   let list;
   const q = ui.search.trim();
-  if (q) list = searchFoods(q, allFoodsForSearch());
+  if (q) list = search(localIndex(), q, 60);
   else if (ui.tab === 'recent') list = S.recents.map(foodById).filter(Boolean);
   else if (ui.tab === 'custom') list = S.customFoods;
-  else list = searchFoods('', allFoodsForSearch());
+  else list = FOODS;
+  ui.lastLocalCount = q ? list.length : -1;
   let html = '';
   if (!list.length) {
-    const msg = q ? `No local match for “${esc(q)}”.` : ui.tab === 'recent' ? 'Foods you log will show up here.' : 'Create a food to see it here.';
+    const msg = q ? (srIndex.length ? `No local match for “${esc(q)}”.` : 'Loading the full food database…') : ui.tab === 'recent' ? 'Foods you log will show up here.' : 'Create a food to see it here.';
     html = `<p class="muted small" style="padding:18px 0 8px;text-align:center">${msg}</p>`;
   } else {
     html = list.slice(0, 80).map((f) => foodRow(f, 'pick')).join('');
@@ -646,6 +678,20 @@ async function runOnlineSearch() {
 function refreshResults() {
   const box = $sheet.querySelector('[data-results]');
   if (box && ui.sheet?.type === 'add') box.innerHTML = resultsHTML(ui.sheet);
+}
+// When nothing local matches, search online automatically after a short pause.
+let autoOnlineTimer = null;
+function maybeAutoOnline() {
+  clearTimeout(autoOnlineTimer);
+  const q = ui.search.trim();
+  ui.autoOnlinePending = null;
+  if (q.length < 3 || ui.lastLocalCount !== 0 || !srIndex.length) return;
+  if (ui.online && ui.online.q === q) return;
+  ui.autoOnlinePending = q;
+  autoOnlineTimer = setTimeout(() => {
+    ui.autoOnlinePending = null;
+    if (ui.sheet?.type === 'add' && ui.search.trim() === q && ui.lastLocalCount === 0 && !(ui.online && ui.online.q === q)) runOnlineSearch();
+  }, 700);
 }
 function activeFood(sh) {
   if (sh.basis === '100g' && sh.food.per100) return { ...sh.food, ...sh.food.per100 };
@@ -846,7 +892,7 @@ document.addEventListener('click', (ev) => {
       ui.date = d === 0 ? todayISO() : N.addDays(ui.date, d);
       render(); break;
     }
-    case 'add': ui.search = ''; ui.tab = S.recents.length ? 'recent' : 'all'; openSheet({ type: 'add', meal: el.dataset.meal }); break;
+    case 'add': ui.search = ''; ui.online = null; ui.tab = S.recents.length ? 'recent' : 'all'; openSheet({ type: 'add', meal: el.dataset.meal }); loadSR(); break;
     case 'tab': ui.tab = el.dataset.v; renderSheet(); break;
     case 'scan': openSheet({ type: 'scan', meal: sh?.meal || el.dataset.meal || 'snacks' }); break;
     case 'scan-again': openSheet({ type: 'scan', meal: sh.meal }); break;
@@ -961,8 +1007,8 @@ document.addEventListener('input', (ev) => {
   const t = ev.target;
   if (t.matches('[data-search]')) {
     ui.search = t.value;
-    const box = $sheet.querySelector('[data-results]');
-    if (box) box.innerHTML = resultsHTML(ui.sheet);
+    refreshResults();
+    maybeAutoOnline();
   } else if (t.matches('[data-serv]')) {
     const v = num(t.value);
     if (v > 0) { ui.sheet.servings = v; const f = ui.sheet.food; const m = N.scaleFood(f, v);
@@ -1036,6 +1082,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.sheet
 /* ------------------------------------------------------------------ */
 applyTheme(localStorage.getItem('macrolog.theme') || 'auto');
 render();
+if (S.profile) setTimeout(loadSR, 1500); // warm the food database after first paint
 // Roll the date over if the app stays open past midnight.
 setInterval(() => { const t = todayISO(); if (ui.date !== t && ui._autoDate !== false && fmtDate(ui.date) === 'Yesterday' && !ui.sheet) { ui.date = t; render(); } }, 60000);
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

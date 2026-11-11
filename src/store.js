@@ -17,6 +17,8 @@ export function defaultState() {
     entries: {}, // date -> [entry]
     weights: {}, // date -> kg
     customFoods: [],
+    foodCache: {}, // id -> food fetched online (so recents/edits resolve offline)
+    usdaKey: '',
     recents: [], // food ids, most recent first
     checkins: [], // { date, kcalBefore, kcalAfter, actualKg, expectedKg }
     lastCheckin: null,

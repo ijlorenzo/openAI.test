@@ -1,6 +1,7 @@
 import * as N from './nutrition.js';
 import { searchFoods } from './foods.js';
 import { load, save, reset, uid, MEALS, exportJSON, importJSON } from './store.js';
+import { lookupBarcode, searchOnline, normalizeBarcode } from './lookup.js';
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
@@ -14,6 +15,7 @@ const ui = {
   search: '',
   tab: 'all',
   onb: null,
+  online: null, // { q, loading, results, error }
 };
 
 const $app = document.getElementById('app');
@@ -54,7 +56,7 @@ function toast(msg) {
 }
 
 function openSheet(sheet) { ui.sheet = sheet; ui.sheetFresh = true; renderSheet(); }
-function closeSheet() { ui.sheet = null; renderSheet(); }
+function closeSheet() { stopScanner(); ui.sheet = null; renderSheet(); }
 
 /* ------------------------------------------------------------------ */
 /* Icons                                                               */
@@ -62,6 +64,7 @@ function closeSheet() { ui.sheet = null; renderSheet(); }
 const ICON = {
   today: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   trends: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>',
+  scan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8v8M11 8v8M14 8v8M17 8v8"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
 };
 
@@ -401,6 +404,15 @@ function renderSettings() {
         ${['auto', 'light', 'dark'].map((v) => `<button class="${theme === v ? 'on' : ''}" data-act="theme" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div></div>
     </section>
     <section class="card">
+      <div class="card-title">Food databases</div>
+      <p class="small" style="margin-bottom:10px">Barcode scanning and online search use <b>Open Food Facts</b> (free, no key). Add a free <b>USDA FoodData Central</b> key to also search US branded products.</p>
+      <form data-form="usda" class="row" style="gap:8px">
+        <input class="input" name="key" placeholder="USDA API key (optional)" value="${esc(S.usdaKey || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        <button class="btn secondary" type="submit" style="width:auto">Save</button>
+      </form>
+      <p class="tiny muted" style="margin-top:8px">Get a key at api.data.gov. It is stored only on this device.</p>
+    </section>
+    <section class="card">
       <div class="card-title">Data</div>
       <p class="small muted" style="margin-bottom:10px">Everything stays on this device. Export a backup now and then.</p>
       <div class="row" style="gap:8px">
@@ -411,7 +423,7 @@ function renderSettings() {
     </section>
     ${!standalone ? `<section class="card flat"><div class="card-title">Install on iPhone</div>
       <p class="small">Open this page in <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>. It will launch full-screen and work offline.</p></section>` : ''}
-    <p class="tiny muted" style="text-align:center;padding:8px 0 16px">Macro Log · Estimates use the Mifflin–St Jeor equation. Not medical advice.</p>`;
+    <p class="tiny muted" style="text-align:center;padding:8px 0 16px">Macro Log · Estimates use the Mifflin–St Jeor equation. Not medical advice.<br>Product data © <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a> contributors (ODbL) and USDA FoodData Central.</p>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -419,6 +431,7 @@ function renderSettings() {
 /* ------------------------------------------------------------------ */
 function renderSheet() {
   const sh = ui.sheet;
+  stopScanner();
   if (!sh) { $sheet.innerHTML = ''; document.body.style.overflow = ''; return; }
   document.body.style.overflow = 'hidden';
   let inner = '', tall = false;
@@ -431,11 +444,13 @@ function renderSheet() {
   else if (sh.type === 'targets') inner = sheetTargets();
   else if (sh.type === 'profile') inner = sheetProfile(sh);
   else if (sh.type === 'import') inner = sheetImport();
+  else if (sh.type === 'scan') inner = sheetScan(sh);
   const enter = ui.sheetFresh ? 'enter' : '';
   ui.sheetFresh = false;
   $sheet.innerHTML = `<div class="scrim ${enter}" data-act="close"></div><div class="sheet ${tall ? 'tall' : ''} ${enter}" role="dialog" aria-modal="true"><div class="grab"></div>${inner}</div>`;
   const focus = $sheet.querySelector('[autofocus]');
   if (focus) setTimeout(() => focus.focus(), 50);
+  if (sh.type === 'scan' && !sh.notFound && !sh.error && !sh.busy) startScanner();
 }
 
 const head = (title) => `<div class="sheet-head"><h2>${title}</h2><button class="close" data-act="close" aria-label="Close">✕</button></div>`;
@@ -443,7 +458,8 @@ const head = (title) => `<div class="sheet-head"><h2>${title}</h2><button class=
 function sheetAdd(sh) {
   const mealLabel = MEALS.find((m) => m.id === sh.meal).label;
   return `${head(`Add to ${mealLabel}`)}
-    <div class="search"><input class="input" type="search" placeholder="Search foods" value="${esc(ui.search)}" data-search autocomplete="off" autocorrect="off" autofocus />
+    <div class="search"><div class="row" style="gap:8px"><input class="input" type="search" placeholder="Search foods" value="${esc(ui.search)}" data-search autocomplete="off" autocorrect="off" autofocus />
+        <button class="iconbtn" data-act="scan" aria-label="Scan barcode" title="Scan barcode">${ICON.scan}</button></div>
       <div class="seg" style="margin-top:10px">
         ${[['recent', 'Recent'], ['all', 'All foods'], ['custom', 'My foods']].map(([v, l]) => `<button class="${ui.tab === v ? 'on' : ''}" data-act="tab" data-v="${v}">${l}</button>`).join('')}
       </div></div>
@@ -455,7 +471,29 @@ function sheetAdd(sh) {
 }
 
 function allFoodsForSearch() { return S.customFoods; }
-function foodById(id) { return S.customFoods.find((f) => f.id === id) || searchFoods('').find((f) => f.id === id); }
+function foodById(id) { return S.customFoods.find((f) => f.id === id) || S.foodCache[id] || searchFoods('').find((f) => f.id === id); }
+function cacheFood(food) {
+  if (!food || !food.source) return;
+  delete S.foodCache[food.id];
+  S.foodCache[food.id] = food;
+  const keys = Object.keys(S.foodCache);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 300))) delete S.foodCache[k];
+}
+function foodRow(f, act, idx) {
+  const badge = f.source ? `<span class="badge">${f.source === 'off' ? 'Open Food Facts' : 'USDA'}</span>` : '';
+  return `<button class="food" data-act="${act}" data-id="${esc(f.id)}" data-idx="${idx ?? ''}">
+      <span><div class="n">${esc(f.name)}${f.brand ? ` <span class="muted">· ${esc(f.brand)}</span>` : ''}</div><div class="s">${esc(f.serving)} · P ${f.protein} · C ${f.carbs} · F ${f.fat} ${badge}</div></span>
+      <span class="kc num">${f.kcal}<small> kcal</small></span></button>`;
+}
+function onlineHTML(q) {
+  if (q.length < 2) return '';
+  const o = ui.online;
+  if (!o || o.q !== q) return `<div class="onlinebox"><button class="btn secondary" data-act="online-search">Search online for “${esc(q)}”</button><p class="tiny muted" style="margin-top:8px;text-align:center">Open Food Facts${S.usdaKey ? ' + USDA' : ''} · needs a connection</p></div>`;
+  if (o.loading) return `<div class="onlinebox"><p class="muted small" style="text-align:center">Searching online…</p></div>`;
+  if (o.error) return `<div class="onlinebox"><p class="small" style="text-align:center;color:var(--danger)">${esc(o.error)}</p><button class="btn secondary" style="margin-top:8px" data-act="online-search">Try again</button></div>`;
+  if (!o.results.length) return `<div class="onlinebox"><p class="muted small" style="text-align:center">No online matches for “${esc(q)}”.</p></div>`;
+  return `<div class="card-title" style="margin-top:14px">Online results</div>` + o.results.map((f, i) => foodRow(f, 'pick-online', i)).join('');
+}
 
 function resultsHTML() {
   let list;
@@ -464,21 +502,166 @@ function resultsHTML() {
   else if (ui.tab === 'recent') list = S.recents.map(foodById).filter(Boolean);
   else if (ui.tab === 'custom') list = S.customFoods;
   else list = searchFoods('', allFoodsForSearch());
+  let html = '';
   if (!list.length) {
-    const msg = q ? `No match for “${esc(q)}”. Try fewer words, or create it.` : ui.tab === 'recent' ? 'Foods you log will show up here.' : 'Create a food to see it here.';
-    return `<p class="muted small" style="padding:24px 0;text-align:center">${msg}</p>`;
+    const msg = q ? `No local match for “${esc(q)}”.` : ui.tab === 'recent' ? 'Foods you log will show up here.' : 'Create a food to see it here.';
+    html = `<p class="muted small" style="padding:18px 0 8px;text-align:center">${msg}</p>`;
+  } else {
+    html = list.slice(0, 80).map((f) => foodRow(f, 'pick')).join('');
   }
-  return list.slice(0, 80).map((f) => `<button class="food" data-act="pick" data-id="${esc(f.id)}">
-      <span><div class="n">${esc(f.name)}${f.brand ? ` <span class="muted">· ${esc(f.brand)}</span>` : ''}</div><div class="s">${esc(f.serving)} · P ${f.protein} · C ${f.carbs} · F ${f.fat}</div></span>
-      <span class="kc num">${f.kcal}<small> kcal</small></span></button>`).join('');
+  return html + onlineHTML(q);
+}
+
+/* ---- Scanner ---- */
+let scanState = null; // { stream, reader, video, timer, active }
+function loadZXing() {
+  if (window.ZXing) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const sc = document.createElement('script');
+    sc.src = 'vendor/zxing.min.js';
+    sc.onload = resolve;
+    sc.onerror = () => reject(new Error('Could not load the scanner'));
+    document.head.appendChild(sc);
+  });
+}
+function setScanStatus(msg) { const el = $sheet.querySelector('[data-scan-status]'); if (el) el.textContent = msg; }
+async function startScanner() {
+  const video = $sheet.querySelector('video[data-scan]');
+  if (!video) return;
+  setScanStatus('Starting camera…');
+  if (!navigator.mediaDevices?.getUserMedia) { setScanStatus('This browser cannot access the camera. Type the barcode below.'); return; }
+  try {
+    await loadZXing();
+    const Z = window.ZXing;
+    const hints = new Map();
+    hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E]);
+    hints.set(Z.DecodeHintType.TRY_HARDER, true);
+    const mfr = new Z.MultiFormatReader();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    if (!$sheet.contains(video)) { stream.getTracks().forEach((t) => t.stop()); return; } // sheet closed meanwhile
+    const canvas = document.createElement('canvas');
+    const cctx = canvas.getContext('2d', { willReadFrequently: true });
+    const st = { stream, video, timer: null, active: true };
+    scanState = st;
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    setScanStatus('Point the camera at a barcode');
+    const tick = () => {
+      if (!st.active) return;
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) { canvas.width = video.videoWidth; canvas.height = video.videoHeight; }
+        cctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        try {
+          const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
+          const res = mfr.decode(bitmap, hints);
+          if (res) { st.active = false; stopScanner(); onBarcode(res.getText()); return; }
+        } catch { /* nothing in this frame */ }
+      }
+      st.timer = setTimeout(tick, 220);
+    };
+    tick();
+  } catch (e) {
+    const denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+    const none = e && (e.name === 'NotFoundError' || e.name === 'OverconstrainedError');
+    setScanStatus(denied ? 'Camera access was denied. Allow it in Settings › Safari, or type the barcode below.'
+      : none ? 'No camera found. Type the barcode below.'
+        : `${(e && e.message) || 'Camera unavailable'}. You can type the barcode below.`);
+  }
+}
+function stopScanner() {
+  const st = scanState; scanState = null;
+  if (!st) return;
+  st.active = false;
+  clearTimeout(st.timer);
+  try { st.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+  try { st.video.srcObject = null; } catch { /* ignore */ }
+}
+function sheetScan(sh) {
+  if (sh.notFound) {
+    return `${head('Not found')}
+      <p class="small" style="margin:-6px 0 14px">No product with barcode <b class="num">${esc(sh.notFound)}</b> in Open Food Facts${S.usdaKey ? ' or USDA' : ''}. You can create it once and the barcode will be remembered.</p>
+      <button class="btn primary" data-act="sheet-custom" data-barcode="${esc(sh.notFound)}">Create food for this barcode</button>
+      <button class="btn secondary" style="margin-top:8px" data-act="scan-again">Scan again</button>`;
+  }
+  if (sh.error) {
+    return `${head('Lookup failed')}
+      <p class="small" style="margin:-6px 0 14px">${esc(sh.error)}</p>
+      <button class="btn primary" data-act="scan-again">Try again</button>
+      <button class="btn secondary" style="margin-top:8px" data-act="sheet-custom" data-barcode="${esc(sh.code || '')}">Create food manually</button>`;
+  }
+  return `${head('Scan barcode')}
+    <div class="scanbox"><video data-scan autoplay muted playsinline></video><div class="scanguide"></div></div>
+    <p class="small muted" style="text-align:center;margin:10px 0 14px" data-scan-status>${sh.busy ? 'Looking up…' : 'Starting camera…'}</p>
+    <form data-form="barcode" class="row" style="gap:8px">
+      <input class="input num" name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="Or type the barcode" autocomplete="off" />
+      <button class="btn secondary" type="submit" style="width:auto">Look up</button>
+    </form>
+    <p class="tiny muted" style="margin-top:12px;text-align:center">Data from Open Food Facts${S.usdaKey ? ' and USDA FoodData Central' : ''}.</p>`;
+}
+function findLocalByBarcode(code) {
+  const n = normalizeBarcode(code);
+  const match = (f) => f.barcode && normalizeBarcode(f.barcode) === n;
+  return S.customFoods.find(match) || Object.values(S.foodCache).find(match) || null;
+}
+async function onBarcode(raw) {
+  const sh = ui.sheet;
+  if (!sh || sh.type !== 'scan') return;
+  const code = normalizeBarcode(raw);
+  if (!code) { setScanStatus('That does not look like a barcode.'); return; }
+  sh.busy = true; sh.code = code;
+  stopScanner();
+  setScanStatus(`Found ${code}. Looking up…`);
+  const local = findLocalByBarcode(code);
+  if (local) { openSheet({ type: 'food', food: local, meal: sh.meal, servings: 1 }); return; }
+  try {
+    const { food } = await lookupBarcode(code, { usdaKey: S.usdaKey });
+    if (ui.sheet !== sh) return; // user closed meanwhile
+    if (food) {
+      cacheFood(food); save(S);
+      openSheet({ type: 'food', food, meal: sh.meal, servings: 1 });
+    } else {
+      sh.busy = false; sh.notFound = code; renderSheet();
+    }
+  } catch (e) {
+    if (ui.sheet !== sh) return;
+    sh.busy = false; sh.error = navigator.onLine === false ? 'You are offline. Connect to look up new products, or type the food in manually.' : (e.message || 'Lookup failed');
+    renderSheet();
+  }
+}
+async function runOnlineSearch() {
+  const q = ui.search.trim();
+  if (q.length < 2) return;
+  ui.online = { q, loading: true, results: [], error: null };
+  refreshResults();
+  try {
+    const results = await searchOnline(q, { usdaKey: S.usdaKey });
+    if (ui.online?.q !== q) return;
+    ui.online = { q, loading: false, results, error: null };
+  } catch (e) {
+    if (ui.online?.q !== q) return;
+    ui.online = { q, loading: false, results: [], error: navigator.onLine === false ? 'You are offline.' : (e.message || 'Search failed') };
+  }
+  refreshResults();
+}
+function refreshResults() {
+  const box = $sheet.querySelector('[data-results]');
+  if (box && ui.sheet?.type === 'add') box.innerHTML = resultsHTML(ui.sheet);
+}
+function activeFood(sh) {
+  if (sh.basis === '100g' && sh.food.per100) return { ...sh.food, ...sh.food.per100 };
+  return sh.food;
 }
 
 function sheetFood(sh) {
-  const f = sh.food;
+  const f = activeFood(sh);
   const m = N.scaleFood(f, sh.servings);
+  const basis = sh.food.per100 && !sh.entryId ? `<div class="seg" style="margin:12px 0 0">
+      <button class="${sh.basis !== '100g' ? 'on' : ''}" data-act="basis" data-v="serving">Per serving</button>
+      <button class="${sh.basis === '100g' ? 'on' : ''}" data-act="basis" data-v="100g">Per 100 g</button></div>` : '';
   const mealSel = `<div class="seg" style="margin:14px 0">${MEALS.map((mm) => `<button class="${sh.meal === mm.id ? 'on' : ''}" data-act="food-meal" data-v="${mm.id}">${mm.label}</button>`).join('')}</div>`;
   return `${head(esc(f.name))}
-    <p class="muted small" style="margin-top:-6px">${esc(f.serving)} per serving${f.brand ? ` · ${esc(f.brand)}` : ''}</p>
+    <p class="muted small" style="margin-top:-6px">${esc(f.serving)} per serving${f.brand ? ` · ${esc(f.brand)}` : ''}${f.source ? ` · <span class="badge">${f.source === 'off' ? 'Open Food Facts' : 'USDA'}</span>` : ''}</p>
+    ${basis}
     <div class="stepper" style="margin:22px 0 6px">
       <button data-act="serv" data-d="-1" aria-label="Fewer">−</button>
       <input class="num" inputmode="decimal" value="${fmtQty(sh.servings)}" data-serv aria-label="Servings" />
@@ -515,6 +698,7 @@ function sheetQuick(sh) {
 function sheetCustom(sh) {
   return `${head('Create food')}
     <form data-form="custom">
+      ${sh.barcode ? `<input type="hidden" name="barcode" value="${esc(sh.barcode)}" /><p class="small muted" style="margin:-6px 0 12px">Barcode <b class="num">${esc(sh.barcode)}</b> will be linked to this food, so scanning it again finds it instantly.</p>` : ''}
       <label class="field"><span>Name</span><input class="input" name="name" required placeholder="e.g. Mom's lasagna" autofocus /></label>
       <label class="field"><span>Serving size</span><input class="input" name="serving" required placeholder="e.g. 1 slice (150 g)" /></label>
       <div class="input-row">
@@ -664,6 +848,15 @@ document.addEventListener('click', (ev) => {
     }
     case 'add': ui.search = ''; ui.tab = S.recents.length ? 'recent' : 'all'; openSheet({ type: 'add', meal: el.dataset.meal }); break;
     case 'tab': ui.tab = el.dataset.v; renderSheet(); break;
+    case 'scan': openSheet({ type: 'scan', meal: sh?.meal || el.dataset.meal || 'snacks' }); break;
+    case 'scan-again': openSheet({ type: 'scan', meal: sh.meal }); break;
+    case 'online-search': runOnlineSearch(); break;
+    case 'pick-online': {
+      const f = ui.online?.results[Number(el.dataset.idx)];
+      if (f) { cacheFood(f); save(S); openSheet({ type: 'food', food: f, meal: sh.meal, servings: 1 }); }
+      break;
+    }
+    case 'basis': sh.basis = el.dataset.v; renderSheet(); break;
     case 'pick': {
       const f = foodById(el.dataset.id);
       if (f) openSheet({ type: 'food', food: f, meal: sh.meal, servings: 1 });
@@ -678,16 +871,18 @@ document.addEventListener('click', (ev) => {
     case 'food-meal': sh.meal = el.dataset.v; renderSheet(); break;
     case 'food-save': {
       const servings = Math.max(0.01, num($sheet.querySelector('[data-serv]')?.value) || sh.servings);
+      const chosen = activeFood(sh);
+      if (sh.food.source) cacheFood(sh.food);
       if (sh.entryId) {
         const list = entriesFor(sh.date);
         const i = list.findIndex((e) => e.id === sh.entryId);
         if (i >= 0) {
-          const m = N.scaleFood(sh.food, servings);
+          const m = N.scaleFood(chosen, servings);
           list[i] = { ...list[i], meal: sh.meal, servings, ...m };
         }
         toast('Updated');
       } else {
-        addEntry(sh.meal, sh.food, servings);
+        addEntry(sh.meal, chosen, servings);
         toast(`Added to ${MEALS.find((x) => x.id === sh.meal).label}`);
       }
       closeSheet(); commit(); break;
@@ -709,7 +904,7 @@ document.addEventListener('click', (ev) => {
       save(S); ui.tab = 'custom'; openSheet({ type: 'add', meal: sh.meal }); toast('Deleted'); break;
     }
     case 'sheet-quick': openSheet({ type: 'quick', meal: sh.meal }); break;
-    case 'sheet-custom': openSheet({ type: 'custom', meal: sh.meal }); break;
+    case 'sheet-custom': openSheet({ type: 'custom', meal: sh.meal, barcode: el.dataset.barcode || null }); break;
     case 'weight': openSheet({ type: 'weight', date: ui.view === 'today' ? ui.date : todayISO() }); break;
     case 'weight-delete': delete S.weights[el.dataset.date]; closeSheet(); commit(); break;
     case 'range': ui.range = Number(el.dataset.v); render(); break;
@@ -801,9 +996,16 @@ document.addEventListener('submit', (ev) => {
     const food = { id: 'quick', name: (g('name') || '').trim() || 'Quick add', serving: 'entry', kcal, protein, carbs, fat };
     addEntry(sh.meal, food, 1); closeSheet(); commit(); toast('Added');
   } else if (kind === 'custom') {
-    const food = { id: 'custom-' + uid(), custom: true, name: g('name').trim(), serving: g('serving').trim(), kcal: num(g('kcal')), protein: num(g('protein')), carbs: num(g('carbs')), fat: num(g('fat')), tags: 'custom' };
+    const food = { id: 'custom-' + uid(), custom: true, name: g('name').trim(), serving: g('serving').trim(), kcal: num(g('kcal')), protein: num(g('protein')), carbs: num(g('carbs')), fat: num(g('fat')), tags: 'custom', barcode: normalizeBarcode(g('barcode')) || undefined };
     S.customFoods = [food, ...S.customFoods]; save(S);
     openSheet({ type: 'food', food, meal: sh.meal, servings: 1 }); toast('Food saved');
+  } else if (kind === 'barcode') {
+    const code = g('code');
+    if (!normalizeBarcode(code)) { toast('Enter the digits under the barcode'); return; }
+    onBarcode(code);
+  } else if (kind === 'usda') {
+    S.usdaKey = String(g('key') || '').trim();
+    save(S); toast(S.usdaKey ? 'USDA key saved' : 'USDA key removed'); render();
   } else if (kind === 'weight') {
     const kg = fromDisplayW(num(g('w')));
     if (!(kg > 20 && kg < 400)) { toast('That weight looks off'); return; }

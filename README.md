@@ -17,6 +17,8 @@ A simple, beautiful macro, meal and workout tracker in the spirit of Carbon Diet
 - **Settings** for targets, profile, units (lb/kg), light/dark/auto theme, and JSON export/import.
 - **Training.** Routines you start in one tap, with last session's weight and reps shown as hints so logging a set is a single tap. Rest timer with a chime, warm-up sets, add or remove exercises mid-workout, and a finish screen that flags new records (estimated one-rep max or heaviest weight) and can update the routine with what you actually did.
 - **Exercise library** of 873 movements from the public-domain Free Exercise DB with muscles, equipment and step-by-step instructions, searchable with gym shorthand ("rdl", "ohp", "db curl"), plus custom exercises. Each exercise has records, an estimated 1RM trend and recent history.
+- **Programs.** Eleven ready-made templates you add as routines in one tap: a Starting Strength–style novice linear progression, StrongLifts 5×5, GZCLP, the Reddit push/pull/legs, an upper/lower split, the bodyweight Recommended Routine, kettlebell Simple & Sinister, a daily mobility session, an upper-focused functional plan, a yoga and balance progress check-in, and a zone 2 cardio base. Each carries its progression rule, and the workout screen suggests the next weight when you hit every target rep.
+- **Cardio and yoga.** Log a run, ride, swim or a yoga practice in a few taps with minutes, distance and effort. Timed holds, cardio and sessions also work as exercises inside any routine, so a plank, a crow pose or a 10-minute bike warm-up sits alongside your lifts. Trends shows weekly cardio and yoga minutes.
 - **Import** workout history from Hevy, Strong or Fitbod CSV exports. Names are matched to the library and unknown ones become custom exercises; re-importing never duplicates.
 - **Optional Google Drive sync.** Each person can connect their own Google account and the app keeps one file in a private app folder of their Drive, so data follows them across devices. Nothing is stored centrally. Changes from several devices merge record by record with timestamps and deletion tombstones. See `docs/google-drive-setup.md` to enable it for a deployment.
 
@@ -57,7 +59,8 @@ src/config.js           public Google OAuth client ID for the deployment
 src/training.js         pure training logic: e1RM, PRs, volume, CSV import
 src/exercises.js        exercise library loader, search, import name matching
 src/train.js            training UI: routines, active workout, history, records
-data/exercises.json     Free Exercise DB, built by tools/build-exercises.py
+data/exercises.json     Free Exercise DB + extra functional/yoga/cardio moves, built by tools/build-exercises.py
+data/programs.json      program templates, built from tools/programs.mjs by tools/build-programs.mjs
 privacy.html            privacy page to link from the Google consent screen
 vendor/zxing.min.js     ZXing barcode decoder (Apache 2.0)
 tests/                  node:test suite for nutrition.js
@@ -75,7 +78,9 @@ tools/make-icons.py     regenerates icons/ (needs Pillow)
 ## Training data
 
 - Exercises come from the [Free Exercise DB](https://github.com/yuhonas/free-exercise-db) (Unlicense / public domain). `tools/build-exercises.py` rebuilds `data/exercises.json` and the separate instructions file; the docstring says where to get the source.
-- Weights are stored in kilograms and shown in your chosen unit. Estimated 1RM uses the Epley formula.
+- Weights are stored in kilograms and distances in kilometres, shown in your chosen units. Estimated 1RM uses the Epley formula.
+- Exercises have a logging mode: weight × reps, timed hold (weight optional), cardio (minutes + distance) or session (minutes + effort). Custom exercises choose theirs.
+- Programs are described in `tools/programs.mjs` by exercise name; the build resolves names to library ids and fails on anything it cannot find. The set and rep schemes follow each program's public description and credit the original authors.
 - To bring history from another app: Hevy → Profile → Settings → Export & Import Data → Export Workouts; Strong → Settings → Export Data; Fitbod → Settings → Export workout data. Then Train → History → Import CSV.
 
 ## Sync

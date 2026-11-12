@@ -4,6 +4,7 @@ import { indexFood, search } from './search.js';
 import { load, save, reset, uid, MEALS, exportJSON, importJSON, touch, bury } from './store.js';
 import { createSync } from './sync.js';
 import { GOOGLE_CLIENT_ID } from './config.js';
+import { initTrain } from './train.js';
 import { lookupBarcode, searchOnline, normalizeBarcode } from './lookup.js';
 
 /* ------------------------------------------------------------------ */
@@ -36,6 +37,14 @@ const sync = createSync({
 });
 
 function commit() { save(S); render(); sync.scheduleSync(); }
+
+// Helpers below are consts, so pass them lazily (they are not initialised yet at this point).
+const train = initTrain({
+  S: () => S, ui, esc: (v) => esc(v),
+  head: (t) => head(t), toast: (m) => toast(m), openSheet: (x) => openSheet(x), closeSheet: () => closeSheet(), touch, bury, uid,
+  todayISO: () => todayISO(), fmtShort: (d) => fmtShort(d), imperial: () => imperial(),
+  save: () => save(S), scheduleSync: (d) => sync.scheduleSync(d), commit: () => commit(), render: () => render(), renderSheet: () => renderSheet(),
+});
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -76,6 +85,7 @@ function closeSheet() { stopScanner(); ui.sheet = null; renderSheet(); }
 /* ------------------------------------------------------------------ */
 const ICON = {
   today: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  train: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7v10M18 7v10M3 9v6M21 9v6M6 12h12"/></svg>',
   trends: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>',
   scan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8v8M11 8v8M14 8v8M17 8v8"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
@@ -93,14 +103,18 @@ function render() {
   $app.classList.remove('no-tabs');
   let body = '';
   if (ui.view === 'today') body = renderToday();
+  else if (ui.view === 'train') body = train.renderTrain();
+  else if (ui.view === 'workout') body = train.renderWorkout();
   else if (ui.view === 'trends') body = renderTrends();
   else body = renderSettings();
   $app.innerHTML = body + renderTabs();
+  train.afterRender();
 }
 
 function renderTabs() {
-  const tab = (id, label) => `<button class="tab ${ui.view === id ? 'on' : ''}" data-act="view" data-view="${id}" aria-label="${label}">${ICON[id]}<span>${label}</span></button>`;
-  return `<nav class="tabs"><div class="tabs-inner">${tab('today', 'Today')}${tab('trends', 'Trends')}${tab('settings', 'Settings')}</div></nav>`;
+  const on = (id) => ui.view === id || (id === 'train' && ui.view === 'workout');
+  const tab = (id, label) => `<button class="tab ${on(id) ? 'on' : ''}" data-act="view" data-view="${id}" aria-label="${label}">${ICON[id]}<span>${label}</span></button>`;
+  return `<nav class="tabs"><div class="tabs-inner four">${tab('today', 'Today')}${tab('train', 'Train')}${tab('trends', 'Trends')}${tab('settings', 'Settings')}</div></nav>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -345,6 +359,7 @@ function renderTrends() {
       ${calorieChart()}
     </section>
 
+    ${train.trendsCardHTML()}
     ${S.checkins.length ? `<section class="card"><div class="card-title">History</div>
       ${[...S.checkins].reverse().slice(0, 8).map((c) => `<div class="row small" style="padding:8px 0;border-top:1px solid var(--line)">
         <span>${fmtShort(c.date)} · ${fmtKg(c.currentKg)}</span><span class="num">${c.kcalBefore} → <b>${c.kcalAfter}</b></span></div>`).join('')}</section>` : ''}`;
@@ -511,6 +526,7 @@ function renderSheet() {
   else if (sh.type === 'profile') inner = sheetProfile(sh);
   else if (sh.type === 'import') inner = sheetImport();
   else if (sh.type === 'scan') inner = sheetScan(sh);
+  else if (sh.type.startsWith('tr-')) { inner = train.sheetHTML(sh); tall = train.isTall(sh); }
   const enter = ui.sheetFresh ? 'enter' : '';
   ui.sheetFresh = false;
   $sheet.innerHTML = `<div class="scrim ${enter}" data-act="close"></div><div class="sheet ${tall ? 'tall' : ''} ${enter}" role="dialog" aria-modal="true"><div class="grab"></div>${inner}</div>`;
@@ -951,9 +967,10 @@ document.addEventListener('click', (ev) => {
   if (!el) return;
   const act = el.dataset.act;
   const sh = ui.sheet;
+  if (act.startsWith('tr-')) { train.onAction(act, el, ev); return; }
 
   switch (act) {
-    case 'view': ui.view = el.dataset.view; window.scrollTo(0, 0); render(); break;
+    case 'view': ui.view = el.dataset.view === 'train' && train.hasActive() ? 'workout' : el.dataset.view; window.scrollTo(0, 0); render(); break;
     case 'date': {
       const d = Number(el.dataset.d);
       ui.date = d === 0 ? todayISO() : N.addDays(ui.date, d);
@@ -1080,6 +1097,7 @@ document.addEventListener('click', (ev) => {
 
 document.addEventListener('input', (ev) => {
   const t = ev.target;
+  if (t.matches('[data-tr-search],[data-tr-w],[data-tr-r]')) { train.onInput(t); return; }
   if (t.matches('[data-search]')) {
     ui.search = t.value;
     refreshResults();
@@ -1098,6 +1116,7 @@ document.addEventListener('input', (ev) => {
 
 document.addEventListener('change', (ev) => {
   const t = ev.target;
+  if (t.matches('[data-tr-import-file]')) { train.onChange(t); return; }
   if (t.matches('[data-import-file]') && t.files?.[0]) {
     t.files[0].text().then((txt) => { S = importJSON(txt); closeSheet(); commit(); toast('Imported'); }).catch((e) => toast(e.message));
   }
@@ -1109,6 +1128,7 @@ document.addEventListener('submit', (ev) => {
   ev.preventDefault();
   const kind = form.dataset.form; const sh = ui.sheet; const F = new FormData(form);
   const g = (k) => F.get(k);
+  if (kind.startsWith('tr-')) { train.onSubmit(kind, form, F); return; }
 
   if (kind === 'quick') {
     const protein = num(g('protein')), carbs = num(g('carbs')), fat = num(g('fat'));

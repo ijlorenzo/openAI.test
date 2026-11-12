@@ -1,8 +1,8 @@
 # Macro Log
 
-A simple, beautiful macro and meal tracker in the spirit of Carbon Diet Coach. It is a Progressive Web App: open it in Safari, add it to your Home Screen, and it runs full-screen on iPhone, works offline, and keeps all data on your device.
+A simple, beautiful macro, meal and workout tracker in the spirit of Carbon Diet Coach and Hevy. It is a Progressive Web App: open it in Safari, add it to your Home Screen, and it runs full-screen on iPhone, works offline, and keeps all data on your device.
 
-<p align="center"><img src="docs/today-dark.png" width="280" alt="Today screen, dark mode"> <img src="docs/trends.png" width="280" alt="Trends screen"> <img src="docs/scan-result.png" width="280" alt="Scanned product from Open Food Facts"></p>
+<p align="center"><img src="docs/today-dark.png" width="280" alt="Today screen, dark mode"> <img src="docs/trends.png" width="280" alt="Trends screen"> <img src="docs/scan-result.png" width="280" alt="Scanned product from Open Food Facts"> <img src="docs/workout.png" width="280" alt="Logging a workout"></p>
 
 ## What it does
 
@@ -15,6 +15,9 @@ A simple, beautiful macro and meal tracker in the spirit of Carbon Diet Coach. I
 - **Weight trend** with a smoothed trend line over 30/90/all days.
 - **Weekly check-in** compares this week's average weight with last week's and nudges calories (max ±150 kcal per week) so your real pace matches your target. Protein stays fixed; carbs and fat are re-split.
 - **Settings** for targets, profile, units (lb/kg), light/dark/auto theme, and JSON export/import.
+- **Training.** Routines you start in one tap, with last session's weight and reps shown as hints so logging a set is a single tap. Rest timer with a chime, warm-up sets, add or remove exercises mid-workout, and a finish screen that flags new records (estimated one-rep max or heaviest weight) and can update the routine with what you actually did.
+- **Exercise library** of 873 movements from the public-domain Free Exercise DB with muscles, equipment and step-by-step instructions, searchable with gym shorthand ("rdl", "ohp", "db curl"), plus custom exercises. Each exercise has records, an estimated 1RM trend and recent history.
+- **Import** workout history from Hevy, Strong or Fitbod CSV exports. Names are matched to the library and unknown ones become custom exercises; re-importing never duplicates.
 - **Optional Google Drive sync.** Each person can connect their own Google account and the app keeps one file in a private app folder of their Drive, so data follows them across devices. Nothing is stored centrally. Changes from several devices merge record by record with timestamps and deletion tombstones. See `docs/google-drive-setup.md` to enable it for a deployment.
 
 ## Run it locally
@@ -51,6 +54,10 @@ src/store.js            localStorage persistence, import/export, merge logic for
 src/drive.js            Google sign-in (redirect flow) and Drive appDataFolder client
 src/sync.js             pull → merge → push orchestration, token handling
 src/config.js           public Google OAuth client ID for the deployment
+src/training.js         pure training logic: e1RM, PRs, volume, CSV import
+src/exercises.js        exercise library loader, search, import name matching
+src/train.js            training UI: routines, active workout, history, records
+data/exercises.json     Free Exercise DB, built by tools/build-exercises.py
 privacy.html            privacy page to link from the Google consent screen
 vendor/zxing.min.js     ZXing barcode decoder (Apache 2.0)
 tests/                  node:test suite for nutrition.js
@@ -64,6 +71,12 @@ tools/make-icons.py     regenerates icons/ (needs Pillow)
 - **Open Food Facts** is used for barcode lookups and online search. It is free and needs no key. The app identifies itself with `app_name` / `app_version` query parameters as their docs ask of web apps. Their read limit is 100 product lookups per minute per user and search is much more limited, so search is a button rather than live-as-you-type.
 - **USDA FoodData Central** is optional. Paste a free key from api.data.gov into Settings and it is added to barcode lookups (US branded products) and search. The key stays in your browser's storage.
 - Product data is © Open Food Facts contributors under the Open Database License, and USDA data is public domain.
+
+## Training data
+
+- Exercises come from the [Free Exercise DB](https://github.com/yuhonas/free-exercise-db) (Unlicense / public domain). `tools/build-exercises.py` rebuilds `data/exercises.json` and the separate instructions file; the docstring says where to get the source.
+- Weights are stored in kilograms and shown in your chosen unit. Estimated 1RM uses the Epley formula.
+- To bring history from another app: Hevy → Profile → Settings → Export & Import Data → Export Workouts; Strong → Settings → Export Data; Fitbod → Settings → Export workout data. Then Train → History → Import CSV.
 
 ## Sync
 

@@ -7,7 +7,7 @@ function state(mods = (s) => s) { const s = defaultState(); s.profile = { sex: '
 
 test('normalize fills nested defaults for legacy saves', () => {
   const s = normalize({ entries: { '2026-01-01': [entry('a', 'A')] } });
-  assert.deepEqual(s.tombstones, { entries: {}, weights: {}, customFoods: {} });
+  assert.deepEqual(Object.keys(s.tombstones).sort(), ['customExercises', 'customFoods', 'entries', 'routines', 'weights', 'workouts']);
   assert.equal(s.stamps.profile, 0);
   assert.equal(s.sync.provider, null);
 });
@@ -85,4 +85,14 @@ test('a fresh device restoring from Drive takes the remote profile even without 
   assert.equal(M.usdaKey, 'KEY');
   assert.deepEqual(M.recents, ['x']);
   assert.equal(M.entries.d.length, 1);
+});
+
+test('workouts and routines merge by id with tombstones; active workout is last-writer-wins', () => {
+  const A = state((s) => { s.workouts.w1 = { id: 'w1', date: '2026-01-01', name: 'A' }; touch(s, 'workouts', 'w1'); s.routines.r1 = { id: 'r1', name: 'Push' }; touch(s, 'routines', 'r1'); s.activeWorkout = { id: 'x', n: 1 }; s.stamps.activeWorkout = 10; });
+  const B = state((s) => { s.workouts.w2 = { id: 'w2', date: '2026-01-02', name: 'B' }; touch(s, 'workouts', 'w2'); bury(s, 'routines', 'r1'); s.activeWorkout = { id: 'x', n: 2 }; s.stamps.activeWorkout = 20; s.customExercises = [{ id: 'cx1', name: 'Odd lift' }]; touch(s, 'customExercises', 'cx1'); });
+  const M = mergeStates(A, B);
+  assert.deepEqual(Object.keys(M.workouts).sort(), ['w1', 'w2']);
+  assert.deepEqual(M.routines, {});
+  assert.equal(M.activeWorkout.n, 2);
+  assert.equal(M.customExercises[0].id, 'cx1');
 });

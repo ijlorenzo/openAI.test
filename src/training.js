@@ -1,0 +1,232 @@
+// Pure training logic: estimates, records, volume and CSV import parsing.
+import { toISODate } from './nutrition.js';
+
+export const LB_PER_KG = 2.2046226218;
+
+/** Epley estimated one-rep max. Reps of 1 return the weight itself. */
+export function e1rm(kg, reps) {
+  if (!(kg > 0) || !(reps > 0)) return 0;
+  if (reps === 1) return kg;
+  return Math.round(kg * (1 + reps / 30) * 10) / 10;
+}
+
+export const setVolume = (s) => (s.w > 0 && s.r > 0 ? s.w * s.r : 0);
+export const workingSets = (sets) => sets.filter((s) => s.done && s.type !== 'warmup' && s.r > 0);
+
+export function workoutSummary(w) {
+  let sets = 0, volume = 0, reps = 0;
+  for (const ex of w.exercises || []) for (const s of workingSets(ex.sets || [])) { sets++; reps += s.r; volume += setVolume(s); }
+  const durationSec = w.startedAt && w.endedAt ? Math.max(0, Math.round((w.endedAt - w.startedAt) / 1000)) : 0;
+  return { sets, reps, volume: Math.round(volume), durationSec, exercises: (w.exercises || []).length };
+}
+
+export function fmtDuration(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Best set (by e1RM) and heaviest weight per exercise across finished workouts, excluding a given workout id. */
+export function exerciseBests(workouts, exerciseId, { excludeId = null } = {}) {
+  let best1rm = 0, bestW = 0, bestVol = 0, sessions = 0;
+  for (const w of Object.values(workouts)) {
+    if (w.id === excludeId) continue;
+    let touched = false;
+    for (const ex of w.exercises || []) {
+      if (ex.exerciseId !== exerciseId) continue;
+      for (const s of workingSets(ex.sets || [])) {
+        touched = true;
+        best1rm = Math.max(best1rm, e1rm(s.w, s.r));
+        bestW = Math.max(bestW, s.w || 0);
+        bestVol = Math.max(bestVol, setVolume(s));
+      }
+    }
+    if (touched) sessions++;
+  }
+  return { best1rm, bestW, bestVol, sessions };
+}
+
+/** Personal records set in this workout relative to all earlier workouts. */
+export function detectPRs(workouts, w) {
+  const prs = [];
+  for (const ex of w.exercises || []) {
+    const before = exerciseBests(workouts, ex.exerciseId, { excludeId: w.id });
+    let top1rm = 0, topW = 0, topSet = null;
+    for (const s of workingSets(ex.sets || [])) {
+      const v = e1rm(s.w, s.r);
+      if (v > top1rm) { top1rm = v; topSet = s; }
+      topW = Math.max(topW, s.w || 0);
+    }
+    if (!topSet) continue;
+    if (top1rm > before.best1rm && before.sessions > 0) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: '1rm', value: top1rm, set: topSet });
+    else if (topW > before.bestW && before.sessions > 0) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: 'weight', value: topW, set: topSet });
+  }
+  return prs;
+}
+
+/** Most recent finished workout containing the exercise (for "previous" hints). */
+export function lastPerformance(workouts, exerciseId, { beforeId = null } = {}) {
+  const list = Object.values(workouts).filter((w) => w.id !== beforeId && (w.exercises || []).some((e) => e.exerciseId === exerciseId));
+  list.sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0));
+  const w = list[0];
+  if (!w) return null;
+  const ex = w.exercises.find((e) => e.exerciseId === exerciseId);
+  return { date: w.date, sets: ex.sets.filter((s) => s.done) };
+}
+
+/** History of best e1RM per session for charts. */
+export function e1rmHistory(workouts, exerciseId, limit = 30) {
+  const pts = [];
+  for (const w of Object.values(workouts)) {
+    let best = 0, topW = 0, vol = 0;
+    for (const ex of w.exercises || []) if (ex.exerciseId === exerciseId) for (const s of workingSets(ex.sets || [])) { best = Math.max(best, e1rm(s.w, s.r)); topW = Math.max(topW, s.w); vol += setVolume(s); }
+    if (best) pts.push({ date: w.date, e1rm: best, topW, volume: Math.round(vol), id: w.id });
+  }
+  pts.sort((a, b) => a.date.localeCompare(b.date) || 0);
+  return pts.slice(-limit);
+}
+
+/** Working sets per muscle group over a date range (inclusive ISO dates). */
+export function setsByMuscle(workouts, exerciseLookup, fromISO, toISO) {
+  const out = {};
+  for (const w of Object.values(workouts)) {
+    if (w.date < fromISO || w.date > toISO) continue;
+    for (const ex of w.exercises || []) {
+      const info = exerciseLookup(ex.exerciseId);
+      const groups = info?.groups?.length ? info.groups : ['other'];
+      const n = workingSets(ex.sets || []).length;
+      for (const g of groups) out[g] = (out[g] || 0) + n / groups.length;
+    }
+  }
+  for (const k of Object.keys(out)) out[k] = Math.round(out[k] * 10) / 10;
+  return out;
+}
+
+export function workoutsPerWeek(workouts, weeks = 8, today = new Date()) {
+  const out = [];
+  const t = new Date(today); t.setHours(0, 0, 0, 0);
+  const dow = (t.getDay() + 6) % 7; // Monday start
+  const thisMonday = new Date(t); thisMonday.setDate(t.getDate() - dow);
+  for (let i = weeks - 1; i >= 0; i--) {
+    const start = new Date(thisMonday); start.setDate(thisMonday.getDate() - i * 7);
+    const end = new Date(start); end.setDate(start.getDate() + 6);
+    const a = toISODate(start), b = toISODate(end);
+    out.push({ start: a, end: b, count: Object.values(workouts).filter((w) => w.date >= a && w.date <= b).length });
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* CSV import (Hevy, Fitbod, Strong)                                    */
+/* ------------------------------------------------------------------ */
+export function parseCSV(text) {
+  const rows = []; let row = [], field = '', q = false;
+  const s = String(text).replace(/^﻿/, '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === '"') { if (s[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && s[i + 1] === '\n') i++; row.push(field); field = ''; if (row.some((x) => x !== '')) rows.push(row); row = []; }
+    else field += c;
+  }
+  row.push(field); if (row.some((x) => x !== '')) rows.push(row);
+  if (!rows.length) return { header: [], records: [] };
+  const header = rows[0].map((h) => h.trim());
+  const records = rows.slice(1).map((r) => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? '').trim()])));
+  return { header, records };
+}
+
+const num = (v) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+
+function parseDateLoose(s) {
+  if (!s) return null;
+  // Hevy: "12 Jan 2025, 18:03" or ISO; Fitbod: "2025-01-12 18:03:21 +0000"; Strong: "2025-01-12 18:03:21"
+  let d = new Date(s);
+  if (Number.isNaN(d.getTime())) d = new Date(String(s).replace(/,/, '').replace(/(\d{1,2}) (\w{3}) (\d{4})/, '$2 $1, $3'));
+  if (Number.isNaN(d.getTime())) d = new Date(String(s).replace(' ', 'T').replace(/ \+\d{4}$/, 'Z'));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Detect the source app from CSV headers. */
+export function detectCSV(header) {
+  const h = header.map((x) => x.toLowerCase());
+  if (h.includes('exercise_title')) return 'hevy';
+  if (h.includes('exercise name') && h.includes('set order')) return 'strong'; // Strong, and Hevy's older export
+  if (h.includes('iswarmup') || (h.includes('exercise') && h.some((x) => x.startsWith('weight(')))) return 'fitbod';
+  return null;
+}
+
+/**
+ * Convert CSV text into workouts: [{ id, name, date, startedAt, endedAt, exercises: [{ name, sets: [{ w(kg), r, type, done }] }] }]
+ * Exercise names are left as-is; the caller maps them to library ids.
+ */
+export function importCSV(text, { makeId = () => Math.random().toString(36).slice(2) } = {}) {
+  const { header, records } = parseCSV(text);
+  const kind = detectCSV(header);
+  if (!kind) throw new Error('Unrecognised CSV. Expected a Hevy, Strong or Fitbod export.');
+  const h = Object.fromEntries(header.map((x) => [x.toLowerCase(), x]));
+  const get = (r, ...names) => { for (const n of names) { const k = h[n.toLowerCase()]; if (k !== undefined && r[k] !== '') return r[k]; } return ''; };
+  const groups = new Map(); // key -> workout
+
+  for (const r of records) {
+    let key, name, start, end, exName, w, reps, type;
+    if (kind === 'hevy' || kind === 'strong') {
+      const startRaw = get(r, 'start_time', 'Date');
+      start = parseDateLoose(startRaw);
+      end = parseDateLoose(get(r, 'end_time')) || null;
+      name = get(r, 'title', 'Workout Name') || 'Workout';
+      exName = get(r, 'exercise_title', 'Exercise Name');
+      key = `${startRaw}|${name}`;
+      const kg = get(r, 'weight_kg', 'Weight (kg)');
+      const lbs = get(r, 'weight_lbs', 'Weight (lbs)', 'Weight');
+      w = kg !== '' ? num(kg) : num(lbs) / LB_PER_KG;
+      reps = num(get(r, 'reps', 'Reps'));
+      const t = get(r, 'set_type', 'Set Type').toLowerCase();
+      type = t.includes('warm') ? 'warmup' : t.includes('drop') ? 'drop' : t.includes('fail') ? 'failure' : 'normal';
+      if (!end && get(r, 'Duration')) { const m = /(\d+)h?\s*(\d+)?m?/.exec(get(r, 'Duration')); if (m && start) end = new Date(start.getTime() + ((Number(m[1]) || 0) * 60 + (Number(m[2]) || 0)) * 60000); }
+    } else {
+      start = parseDateLoose(get(r, 'Date'));
+      if (!start) continue;
+      // Fitbod has per-set timestamps; group sets within 3 h of the first set of the day.
+      const dayKey = toISODate(start);
+      let found = null;
+      for (const [k, g] of groups) if (k.startsWith(dayKey + '|') && Math.abs(start - g._first) < 3 * 3600 * 1000) { found = k; break; }
+      key = found || `${dayKey}|${start.getTime()}`;
+      name = 'Fitbod workout';
+      exName = get(r, 'Exercise');
+      const kg = get(r, 'Weight(kg)', 'Weight (kg)');
+      w = kg !== '' ? num(kg) : num(get(r, 'Weight(lb)', 'Weight (lbs)')) / LB_PER_KG;
+      reps = num(get(r, 'Reps'));
+      type = /true|1/i.test(get(r, 'isWarmup')) ? 'warmup' : 'normal';
+      end = null;
+    }
+    if (!start || !exName) continue;
+    if (!groups.has(key)) groups.set(key, { id: 'imp-' + makeId(), name, date: toISODate(start), startedAt: start.getTime(), endedAt: end ? end.getTime() : null, _first: start, _last: start, exercises: [], source: kind });
+    const g = groups.get(key);
+    if (start > g._last) g._last = start;
+    if (end && (!g.endedAt || end.getTime() > g.endedAt)) g.endedAt = end.getTime();
+    let ex = g.exercises[g.exercises.length - 1];
+    if (!ex || ex.name !== exName) { ex = { name: exName, sets: [] }; g.exercises.push(ex); }
+    if (reps > 0 || w > 0) ex.sets.push({ id: makeId(), w: Math.round(w * 100) / 100, r: Math.round(reps), type, done: true });
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    if (!g.endedAt) g.endedAt = g._last.getTime() + (g._last.getTime() === g.startedAt ? 45 * 60000 : 3 * 60000);
+    delete g._first; delete g._last;
+    g.exercises = g.exercises.filter((e) => e.sets.length);
+    if (g.exercises.length) out.push(g);
+  }
+  out.sort((a, b) => a.startedAt - b.startedAt);
+  return { kind, workouts: out };
+}
+
+/** Normalise an app export's exercise name for library matching: "Bench Press (Barbell)" → "barbell bench press". */
+export function normalizeExerciseName(name) {
+  let s = String(name || '').trim();
+  const m = /^(.*?)\s*\(([^)]+)\)\s*$/.exec(s);
+  if (m) s = `${m[2]} ${m[1]}`;
+  return s.replace(/\s+/g, ' ').toLowerCase();
+}

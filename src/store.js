@@ -24,8 +24,14 @@ export function defaultState() {
     lastCheckin: null,
     // Sync bookkeeping: per-record last-modified stamps and deletion tombstones
     // so two devices can merge without clobbering each other.
-    stamps: { entries: {}, weights: {}, customFoods: {}, profile: 0, targets: 0, usdaKey: 0, lastCheckin: 0, recents: 0 },
-    tombstones: { entries: {}, weights: {}, customFoods: {} },
+    // Training
+    workouts: {}, // id -> finished workout
+    routines: {}, // id -> routine template
+    customExercises: [],
+    activeWorkout: null,
+    trainPrefs: { restSec: 90 },
+    stamps: { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, profile: 0, targets: 0, usdaKey: 0, lastCheckin: 0, recents: 0, activeWorkout: 0, trainPrefs: 0 },
+    tombstones: { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {} },
     sync: { provider: null, fileId: null, lastSync: 0 },
   };
 }
@@ -35,8 +41,12 @@ export function normalize(state) {
   const d = defaultState();
   const out = { ...d, ...state };
   out.stamps = { ...d.stamps, ...(state.stamps || {}) };
-  for (const k of ['entries', 'weights', 'customFoods']) out.stamps[k] = { ...(state.stamps?.[k] || {}) };
-  out.tombstones = { entries: {}, weights: {}, customFoods: {}, ...(state.tombstones || {}) };
+  for (const k of ['entries', 'weights', 'customFoods', 'workouts', 'routines', 'customExercises']) out.stamps[k] = { ...(state.stamps?.[k] || {}) };
+  out.tombstones = { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, ...(state.tombstones || {}) };
+  out.workouts = state.workouts || {};
+  out.routines = state.routines || {};
+  out.customExercises = state.customExercises || [];
+  out.trainPrefs = { ...d.trainPrefs, ...(state.trainPrefs || {}) };
   out.sync = { ...d.sync, ...(state.sync || {}) };
   out.entries = state.entries || {};
   out.weights = state.weights || {};
@@ -75,7 +85,7 @@ export function mergeStates(localIn, remoteIn) {
   const maxTomb = (g, k) => Math.max(L.tombstones[g][k] || 0, R.tombstones[g][k] || 0);
 
   const empty = (v) => v == null || v === '' || (Array.isArray(v) && v.length === 0);
-  for (const g of ['profile', 'targets', 'usdaKey', 'lastCheckin', 'recents']) {
+  for (const g of ['profile', 'targets', 'usdaKey', 'lastCheckin', 'recents', 'activeWorkout', 'trainPrefs']) {
     // A missing value never beats a present one, whatever the stamps say.
     if (empty(L[g]) && !empty(R[g])) out[g] = R[g];
     else if (empty(R[g]) && !empty(L[g])) out[g] = L[g];
@@ -135,6 +145,40 @@ export function mergeStates(localIn, remoteIn) {
   }
   for (const id of new Set([...Object.keys(L.tombstones.customFoods), ...Object.keys(R.tombstones.customFoods)])) {
     if (!foods.has(id)) out.tombstones.customFoods[id] = maxTomb('customFoods', id);
+  }
+
+  // Keyed maps: workouts and routines.
+  for (const g of ['workouts', 'routines']) {
+    const ids = new Set([...Object.keys(L[g]), ...Object.keys(R[g]), ...Object.keys(L.tombstones[g]), ...Object.keys(R.tombstones[g])]);
+    for (const id of ids) {
+      const lu = L.stamps[g][id] || 0, ru = R.stamps[g][id] || 0;
+      let val, u;
+      if (L[g][id] && R[g][id]) { val = ru > lu ? R[g][id] : L[g][id]; u = Math.max(lu, ru); }
+      else if (L[g][id]) { val = L[g][id]; u = lu; }
+      else if (R[g][id]) { val = R[g][id]; u = ru; }
+      const t = maxTomb(g, id);
+      if (val && !(t && t >= u)) { out[g][id] = val; if (u) out.stamps[g][id] = u; }
+      else if (t) out.tombstones[g][id] = t;
+    }
+  }
+  // Custom exercises: array by id (same rules as custom foods).
+  {
+    const m = new Map();
+    for (const src of [R, L]) for (const f of src.customExercises) {
+      const u = src.stamps.customExercises[f.id] || 0;
+      const cur = m.get(f.id);
+      if (!cur || u >= cur.u) m.set(f.id, { f, u });
+    }
+    for (const [id, { f, u }] of m) {
+      const t = maxTomb('customExercises', id);
+      if (t && t >= u) { out.tombstones.customExercises[id] = t; continue; }
+      out.customExercises.push(f);
+      const st = maxStamp('customExercises', id);
+      if (st) out.stamps.customExercises[id] = st;
+    }
+    for (const id of new Set([...Object.keys(L.tombstones.customExercises), ...Object.keys(R.tombstones.customExercises)])) {
+      if (!m.has(id)) out.tombstones.customExercises[id] = maxTomb('customExercises', id);
+    }
   }
 
   // Check-ins: union by date; keep the later-applied one per day.

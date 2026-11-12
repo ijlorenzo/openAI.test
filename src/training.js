@@ -11,13 +11,23 @@ export function e1rm(kg, reps) {
 }
 
 export const setVolume = (s) => (s.w > 0 && s.r > 0 ? s.w * s.r : 0);
-export const workingSets = (sets) => sets.filter((s) => s.done && s.type !== 'warmup' && s.r > 0);
+/** A set counts when it is done and has any measurable content (reps, seconds or distance). */
+export const workingSets = (sets) => sets.filter((s) => s.done && s.type !== 'warmup' && (s.r > 0 || s.dur > 0 || s.dist > 0));
+export const modeOf = (ex) => ex.mode || 'strength';
 
 export function workoutSummary(w) {
-  let sets = 0, volume = 0, reps = 0;
-  for (const ex of w.exercises || []) for (const s of workingSets(ex.sets || [])) { sets++; reps += s.r; volume += setVolume(s); }
+  let sets = 0, volume = 0, reps = 0, activeSec = 0, distKm = 0;
+  for (const ex of w.exercises || []) {
+    const mode = modeOf(ex);
+    for (const s of workingSets(ex.sets || [])) {
+      sets++;
+      if (mode === 'strength') { reps += s.r || 0; volume += setVolume(s); }
+      if (s.dur > 0) activeSec += s.dur;
+      if (s.dist > 0) distKm += s.dist;
+    }
+  }
   const durationSec = w.startedAt && w.endedAt ? Math.max(0, Math.round((w.endedAt - w.startedAt) / 1000)) : 0;
-  return { sets, reps, volume: Math.round(volume), durationSec, exercises: (w.exercises || []).length };
+  return { sets, reps, volume: Math.round(volume), durationSec, activeSec, distKm: Math.round(distKm * 100) / 100, exercises: (w.exercises || []).length, kind: w.kind || 'strength' };
 }
 
 export function fmtDuration(sec) {
@@ -28,7 +38,7 @@ export function fmtDuration(sec) {
 
 /** Best set (by e1RM) and heaviest weight per exercise across finished workouts, excluding a given workout id. */
 export function exerciseBests(workouts, exerciseId, { excludeId = null } = {}) {
-  let best1rm = 0, bestW = 0, bestVol = 0, sessions = 0;
+  let best1rm = 0, bestW = 0, bestVol = 0, bestDur = 0, bestDist = 0, totalSec = 0, sessions = 0;
   for (const w of Object.values(workouts)) {
     if (w.id === excludeId) continue;
     let touched = false;
@@ -39,11 +49,14 @@ export function exerciseBests(workouts, exerciseId, { excludeId = null } = {}) {
         best1rm = Math.max(best1rm, e1rm(s.w, s.r));
         bestW = Math.max(bestW, s.w || 0);
         bestVol = Math.max(bestVol, setVolume(s));
+        bestDur = Math.max(bestDur, s.dur || 0);
+        bestDist = Math.max(bestDist, s.dist || 0);
+        totalSec += s.dur || 0;
       }
     }
     if (touched) sessions++;
   }
-  return { best1rm, bestW, bestVol, sessions };
+  return { best1rm, bestW, bestVol, bestDur, bestDist, totalSec, sessions };
 }
 
 /** Personal records set in this workout relative to all earlier workouts. */
@@ -51,15 +64,22 @@ export function detectPRs(workouts, w) {
   const prs = [];
   for (const ex of w.exercises || []) {
     const before = exerciseBests(workouts, ex.exerciseId, { excludeId: w.id });
-    let top1rm = 0, topW = 0, topSet = null;
-    for (const s of workingSets(ex.sets || [])) {
-      const v = e1rm(s.w, s.r);
-      if (v > top1rm) { top1rm = v; topSet = s; }
-      topW = Math.max(topW, s.w || 0);
+    const mode = modeOf(ex);
+    const sets = workingSets(ex.sets || []);
+    if (!sets.length || before.sessions === 0) continue;
+    if (mode === 'strength') {
+      let top1rm = 0, topW = 0, topSet = null;
+      for (const s of sets) { const v = e1rm(s.w, s.r); if (v > top1rm) { top1rm = v; topSet = s; } topW = Math.max(topW, s.w || 0); }
+      if (top1rm > before.best1rm) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: '1rm', value: top1rm, set: topSet });
+      else if (topW > before.bestW) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: 'weight', value: topW, set: topSet });
+    } else if (mode === 'timed') {
+      const top = Math.max(...sets.map((s) => s.dur || 0));
+      if (top > before.bestDur) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: 'hold', value: top });
+    } else if (mode === 'cardio') {
+      const dist = Math.max(...sets.map((s) => s.dist || 0)), dur = Math.max(...sets.map((s) => s.dur || 0));
+      if (dist > before.bestDist && dist > 0) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: 'distance', value: dist });
+      else if (dur > before.bestDur && dur > 0) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: 'duration', value: dur });
     }
-    if (!topSet) continue;
-    if (top1rm > before.best1rm && before.sessions > 0) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: '1rm', value: top1rm, set: topSet });
-    else if (topW > before.bestW && before.sessions > 0) prs.push({ exerciseId: ex.exerciseId, name: ex.name, type: 'weight', value: topW, set: topSet });
   }
   return prs;
 }
@@ -74,16 +94,52 @@ export function lastPerformance(workouts, exerciseId, { beforeId = null } = {}) 
   return { date: w.date, sets: ex.sets.filter((s) => s.done) };
 }
 
-/** History of best e1RM per session for charts. */
+/** History per session for charts: e1rm (strength), best hold (timed), distance/duration (cardio, session). */
 export function e1rmHistory(workouts, exerciseId, limit = 30) {
   const pts = [];
   for (const w of Object.values(workouts)) {
-    let best = 0, topW = 0, vol = 0;
-    for (const ex of w.exercises || []) if (ex.exerciseId === exerciseId) for (const s of workingSets(ex.sets || [])) { best = Math.max(best, e1rm(s.w, s.r)); topW = Math.max(topW, s.w); vol += setVolume(s); }
-    if (best) pts.push({ date: w.date, e1rm: best, topW, volume: Math.round(vol), id: w.id });
+    let best = 0, topW = 0, vol = 0, dur = 0, dist = 0, touched = false;
+    for (const ex of w.exercises || []) if (ex.exerciseId === exerciseId) for (const s of workingSets(ex.sets || [])) { touched = true; best = Math.max(best, e1rm(s.w, s.r)); topW = Math.max(topW, s.w || 0); vol += setVolume(s); dur = Math.max(dur, s.dur || 0); dist += s.dist || 0; }
+    if (touched) pts.push({ date: w.date, e1rm: best, topW, volume: Math.round(vol), dur, dist: Math.round(dist * 100) / 100, id: w.id, startedAt: w.startedAt || 0 });
   }
-  pts.sort((a, b) => a.date.localeCompare(b.date) || 0);
+  pts.sort((a, b) => a.date.localeCompare(b.date) || a.startedAt - b.startedAt);
   return pts.slice(-limit);
+}
+
+/** Minutes and distance by mode over a date range. */
+export function activityTotals(workouts, fromISO, toISO) {
+  const out = { strengthSets: 0, cardioSec: 0, cardioKm: 0, sessionSec: 0, holdSec: 0, workouts: 0 };
+  for (const w of Object.values(workouts)) {
+    if (w.date < fromISO || w.date > toISO) continue;
+    out.workouts++;
+    for (const ex of w.exercises || []) {
+      const mode = modeOf(ex);
+      for (const s of workingSets(ex.sets || [])) {
+        if (mode === 'strength') out.strengthSets++;
+        else if (mode === 'cardio') { out.cardioSec += s.dur || 0; out.cardioKm += s.dist || 0; }
+        else if (mode === 'session') out.sessionSec += s.dur || 0;
+        else if (mode === 'timed') out.holdSec += s.dur || 0;
+      }
+    }
+  }
+  out.cardioKm = Math.round(out.cardioKm * 100) / 100;
+  return out;
+}
+
+/**
+ * Suggest the next load for a routine exercise with a linear progression rule:
+ * if every working set last time reached the top of the target rep range, add the increment.
+ */
+export function suggestNext(lastSets, targetReps, incKg) {
+  if (!incKg || !lastSets || !lastSets.length) return null;
+  const working = lastSets.filter((s) => s.type !== 'warmup' && s.r > 0);
+  if (!working.length) return null;
+  const m = /(\d+)(?:\s*-\s*(\d+))?/.exec(String(targetReps || ''));
+  if (!m) return null;
+  const top = Number(m[2] || m[1]);
+  const maxW = Math.max(...working.map((s) => s.w || 0));
+  const hit = working.filter((s) => (s.w || 0) >= maxW - 0.01).every((s) => s.r >= top);
+  return hit && maxW > 0 ? Math.round((maxW + incKg) * 100) / 100 : null;
 }
 
 /** Working sets per muscle group over a date range (inclusive ISO dates). */
@@ -92,6 +148,7 @@ export function setsByMuscle(workouts, exerciseLookup, fromISO, toISO) {
   for (const w of Object.values(workouts)) {
     if (w.date < fromISO || w.date > toISO) continue;
     for (const ex of w.exercises || []) {
+      if (modeOf(ex) !== 'strength') continue;
       const info = exerciseLookup(ex.exerciseId);
       const groups = info?.groups?.length ? info.groups : ['other'];
       const n = workingSets(ex.sets || []).length;

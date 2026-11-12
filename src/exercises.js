@@ -37,10 +37,10 @@ export function loadExercises() {
   if (loadP) return loadP;
   loadP = fetch('data/exercises.json').then((r) => r.json()).then((d) => {
     groupsMap = d.groups || {};
-    library = d.exercises.map(([id, name, equipment, primary, secondary, category, level, mechanic, force, popular]) => {
+    library = d.exercises.map(([id, name, equipment, primary, secondary, category, level, mechanic, force, popular, mode]) => {
       const groups = [...new Set(primary.map((m) => groupsMap[m] || 'other'))];
       if (!groups.length) groups.push('other');
-      return { id, name, equipment: equipment || 'other', primary, secondary, category, level, mechanic, force, popular, groups,
+      return { id, name, equipment: equipment || 'other', primary, secondary, category, level, mechanic, force, popular, groups, mode: mode || 'strength',
         tags: `${equipment} ${primary.join(' ')} ${secondary.join(' ')} ${groups.join(' ')} ${category}` };
     });
     byId = new Map(library.map((e) => [e.id, e]));
@@ -62,7 +62,7 @@ export function loadInstructions(id) {
 export function normalizeCustom(c) {
   const primary = c.primary || [];
   const groups = c.groups && c.groups.length ? c.groups : [...new Set(primary.map((m) => groupsMap[m] || 'other'))];
-  return { ...c, custom: true, equipment: c.equipment || 'other', primary, secondary: c.secondary || [], groups: groups.length ? groups : ['other'], popular: 0,
+  return { ...c, custom: true, equipment: c.equipment || 'other', primary, secondary: c.secondary || [], groups: groups.length ? groups : ['other'], popular: 0, mode: c.mode || 'strength',
     tags: `${c.equipment || ''} ${primary.join(' ')} ${groups.join(' ')} custom` };
 }
 
@@ -102,3 +102,15 @@ export function matchImportedName(rawName, custom = [], normalize = (s) => s) {
   const covered = words.filter((w) => nameWords.some((n) => n.startsWith(w.slice(0, Math.min(w.length, 5))))).length;
   return covered >= Math.max(1, Math.ceil(words.length * 0.6)) ? top : null;
 }
+
+export const MODES = ['strength', 'timed', 'cardio', 'session'];
+export const MODE_LABEL = { strength: 'Weight × reps', timed: 'Timed hold / carry', cardio: 'Cardio (time + distance)', session: 'Session (time + effort)' };
+
+let programs = null; let programsP = null;
+export function loadPrograms() {
+  if (programs) return Promise.resolve(programs);
+  if (!programsP) programsP = fetch('data/programs.json').then((r) => r.json()).then((d) => { programs = d.programs; return programs; }).catch((e) => { programsP = null; throw e; });
+  return programsP;
+}
+export const programsLoaded = () => !!programs;
+export const getPrograms = () => programs || [];

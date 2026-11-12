@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { e1rm, workoutSummary, exerciseBests, detectPRs, lastPerformance, e1rmHistory, setsByMuscle, workoutsPerWeek, parseCSV, detectCSV, importCSV, normalizeExerciseName, fmtDuration } from '../src/training.js';
+import { e1rm, workoutSummary, activityTotals, suggestNext, exerciseBests, detectPRs, lastPerformance, e1rmHistory, setsByMuscle, workoutsPerWeek, parseCSV, detectCSV, importCSV, normalizeExerciseName, fmtDuration } from '../src/training.js';
 
 const set = (w, r, extra = {}) => ({ id: Math.random().toString(36).slice(2), w, r, type: 'normal', done: true, ...extra });
 const wk = (id, date, exercises, start = 0) => ({ id, date, startedAt: start, endedAt: start + 3600000, name: 'W', exercises });
@@ -13,7 +13,8 @@ test('Epley e1RM', () => {
 
 test('workout summary ignores warmups and undone sets', () => {
   const w = wk('a', '2026-01-01', [{ exerciseId: 'x', name: 'X', sets: [set(100, 5), set(60, 5, { type: 'warmup' }), set(100, 5, { done: false })] }], 1000);
-  assert.deepEqual(workoutSummary(w), { sets: 1, reps: 5, volume: 500, durationSec: 3600, exercises: 1 });
+  const s = workoutSummary(w);
+  assert.deepEqual([s.sets, s.reps, s.volume, s.durationSec, s.exercises], [1, 5, 500, 3600, 1]);
   assert.equal(fmtDuration(3600), '1h 0m');
   assert.equal(fmtDuration(125), '2:05');
 });
@@ -96,4 +97,26 @@ test('exercise name normalisation moves the equipment to the front', () => {
   assert.equal(normalizeExerciseName('Bench Press (Barbell)'), 'barbell bench press');
   assert.equal(normalizeExerciseName('  Lat  Pulldown (Cable) '), 'cable lat pulldown');
   assert.equal(normalizeExerciseName('Pull Up'), 'pull up');
+});
+
+test('timed and cardio sets count, totals and PRs', () => {
+  const W = {
+    a: wk('a', '2026-11-10', [{ exerciseId: 'plank', name: 'Plank', mode: 'timed', sets: [{ id: '1', dur: 45, done: true, type: 'normal' }] }, { exerciseId: 'run', name: 'Run', mode: 'cardio', sets: [{ id: '2', dur: 1800, dist: 5, done: true, type: 'normal' }] }], 1),
+  };
+  const s = workoutSummary(W.a);
+  assert.equal(s.sets, 2); assert.equal(s.activeSec, 1845); assert.equal(s.distKm, 5);
+  const tot = activityTotals(W, '2026-11-09', '2026-11-11');
+  assert.equal(tot.cardioSec, 1800); assert.equal(tot.cardioKm, 5); assert.equal(tot.holdSec, 45); assert.equal(tot.strengthSets, 0);
+  const b = wk('b', '2026-11-12', [{ exerciseId: 'plank', name: 'Plank', mode: 'timed', sets: [{ id: '3', dur: 60, done: true, type: 'normal' }] }, { exerciseId: 'run', name: 'Run', mode: 'cardio', sets: [{ id: '4', dur: 1700, dist: 6, done: true, type: 'normal' }] }], 2);
+  const prs = detectPRs({ ...W, b }, b);
+  assert.deepEqual(prs.map((p) => p.type), ['hold', 'distance']);
+  assert.equal(e1rmHistory({ ...W, b }, 'plank').map((p) => p.dur).join(','), '45,60');
+});
+
+test('linear progression suggestion', () => {
+  assert.equal(suggestNext([set(100, 5), set(100, 5), set(100, 5)], '5', 2.5), 102.5);
+  assert.equal(suggestNext([set(100, 5), set(100, 4)], '5', 2.5), null);
+  assert.equal(suggestNext([set(60, 12), set(60, 12)], '8-12', 2.5), 62.5);
+  assert.equal(suggestNext([set(60, 10)], '8-12', 2.5), null);
+  assert.equal(suggestNext([set(100, 5)], '5', 0), null);
 });

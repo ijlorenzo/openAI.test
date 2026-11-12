@@ -1,5 +1,5 @@
 // Offline-first service worker. Bump CACHE when shipping changes.
-const CACHE = 'macrolog-v4';
+const CACHE = 'macrolog-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -16,6 +16,10 @@ const ASSETS = [
   './src/sync.js',
   './privacy.html',
   './data/foods-sr.json',
+  './data/exercises.json',
+  './src/training.js',
+  './src/exercises.js',
+  './src/train.js',
   './vendor/zxing.min.js',
   './icons/icon-192.png',
   './icons/icon-512.png',

@@ -7,7 +7,7 @@ function state(mods = (s) => s) { const s = defaultState(); s.profile = { sex: '
 
 test('normalize fills nested defaults for legacy saves', () => {
   const s = normalize({ entries: { '2026-01-01': [entry('a', 'A')] } });
-  assert.deepEqual(Object.keys(s.tombstones).sort(), ['customExercises', 'customFoods', 'entries', 'routines', 'weights', 'workouts']);
+  assert.deepEqual(Object.keys(s.tombstones).sort(), ['blocks', 'customExercises', 'customFoods', 'entries', 'routines', 'weights', 'workouts']);
   assert.equal(s.stamps.profile, 0);
   assert.equal(s.sync.provider, null);
 });
@@ -95,4 +95,11 @@ test('workouts and routines merge by id with tombstones; active workout is last-
   assert.deepEqual(M.routines, {});
   assert.equal(M.activeWorkout.n, 2);
   assert.equal(M.customExercises[0].id, 'cx1');
+});
+
+test('active block is last-writer-wins and finished blocks merge by id', () => {
+  const A = state((s) => { s.block = { id: 'b1', weeks: 8 }; s.stamps.block = 10; s.blocks.old = { id: 'old' }; touch(s, 'blocks', 'old'); });
+  const B = state((s) => { s.block = { id: 'b1', weeks: 6 }; s.stamps.block = 20; });
+  const M = mergeStates(A, B);
+  assert.equal(M.block.weeks, 6); assert.ok(M.blocks.old);
 });

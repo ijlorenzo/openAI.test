@@ -48,12 +48,28 @@ export function initTrain(ctx) {
         suggest = imperial() ? rounded / T.LB_PER_KG : rounded;
       }
     }
+    // Training block: focus lifts get a target that keeps them on the block's line (or a deload load).
+    let blockHint = null;
+    const blk = S().block;
+    if (blk && mode === 'strength' && (blk.focus || []).includes(ex.id)) {
+      const prog = T.focusProgress(S().workouts, blk, ex.id, todayISO());
+      const topReps = parseInt(String(tpl?.reps || '').replace(/^(\d+)\s*-\s*(\d+).*$/, '$2'), 10) || parseInt(tpl?.reps, 10) || (prev[0]?.r || 5);
+      const lastTop = prev.length ? Math.max(...prev.map((x) => x.w || 0)) : null;
+      const kg = T.sessionTargetKg({ progress: prog, reps: topReps, lastTopKg: lastTop, isDeload: prog.isDeload });
+      if (kg) {
+        const step = imperial() ? 2.5 : 1.25; const disp = imperial() ? kg * T.LB_PER_KG : kg;
+        const rounded = Math.round(disp / step) * step; const kgR = imperial() ? rounded / T.LB_PER_KG : rounded;
+        suggest = kgR;
+        blockHint = prog.isDeload ? { kind: 'deload', text: `Deload week · ~60%: ${toD(kgR)} ${wU()}` }
+          : { kind: prog.status, text: `Block target ${toD(kgR)}×${topReps}${prog.pct != null ? ` · you're ${prog.pct >= 0 ? '+' : ''}${prog.pct}% (${prog.status.replace('-', ' ')})` : ''}` };
+      }
+    }
     const sets = Array.from({ length: Math.max(1, setCount) }, (_, i) => {
       const p = prev[i] || prev[prev.length - 1] || null;
       return { id: uid(), w: null, r: null, dur: null, dist: null, rpe: null, type: 'normal', done: false,
         prevW: suggest ?? (p ? p.w : null), prevR: p ? p.r : null, prevDur: p ? p.dur : null, prevDist: p ? p.dist : null };
     });
-    return { key: uid(), exerciseId: ex.id, name: ex.name, mode, restSec: tpl?.restSec ?? (mode === 'strength' ? (S().trainPrefs.restSec || 90) : 30), targetReps: tpl?.reps || '', progress: tpl?.progress || null, suggest, sets, lastDate: last?.date || null, lastSummary: prev.length ? prev.map((x) => fmtSet(x, mode)).join(', ') : null };
+    return { key: uid(), exerciseId: ex.id, name: ex.name, mode, restSec: tpl?.restSec ?? (mode === 'strength' ? (S().trainPrefs.restSec || 90) : 30), targetReps: tpl?.reps || '', progress: tpl?.progress || null, suggest, blockHint, sets, lastDate: last?.date || null, lastSummary: prev.length ? prev.map((x) => fmtSet(x, mode)).join(', ') : null };
   }
   function startWorkout({ name = 'Workout', routineId = null, exercises = [] }) {
     const w = { id: uid(), name, routineId, startedAt: Date.now(), exercises };
@@ -127,6 +143,7 @@ export function initTrain(ctx) {
     const weeks = T.workoutsPerWeek(S().workouts, 1);
     return `
       <header class="header"><div><h1>Train</h1><div class="sub">${weeks[0].count} workout${weeks[0].count === 1 ? '' : 's'} this week</div></div></header>
+      ${blockCardHTML(w)}
       ${w ? `<button class="bigstart" data-act="tr-resume"><span><div class="t">Resume ${esc(w.name)}</div><div class="s">${T.fmtDuration(Math.floor((Date.now() - w.startedAt) / 1000))} · ${(w.exercises || []).reduce((n, e) => n + e.sets.filter((s) => s.done).length, 0)} sets done</div></span><span style="font-size:22px">›</span></button>`
         : `<button class="bigstart" data-act="tr-start-empty"><span><div class="t">Start empty workout</div><div class="s">Pick exercises as you go</div></span><span style="font-size:26px">+</span></button>`}
       <div class="quickrow" style="margin:-4px 0 14px"><button class="btn secondary" data-act="tr-quick" data-kind="cardio">🏃 Log cardio</button><button class="btn secondary" data-act="tr-quick" data-kind="yoga">🧘 Log yoga</button></div>
@@ -136,8 +153,8 @@ export function initTrain(ctx) {
       </section>
       <section class="card" style="padding:0">
         <div class="meal-head"><div class="t">Routines</div><button class="meal-add" data-act="tr-routine-new" aria-label="New routine">+</button></div>
-        ${routines.length ? routines.map((r) => { const last = routineLastDone(r); return `<div class="routine" style="border-top:1px solid var(--line)">
-          <div class="row"><div><div class="t">${esc(r.name)}</div><div class="s">${r.exercises.length} exercise${r.exercises.length === 1 ? '' : 's'} · ${r.exercises.map((e) => e.name.split(' - ')[0]).slice(0, 3).map(esc).join(', ')}${r.exercises.length > 3 ? '…' : ''}${last ? ` · last ${fmtShort(last)}` : ''}</div></div></div>
+        ${routines.length ? routines.map((r) => { const last = routineLastDone(r); const locked = !!(S().block && !T.blockPosition(S().block, todayISO()).done && (S().block.routineIds || []).includes(r.id)); return `<div class="routine" style="border-top:1px solid var(--line)">
+          <div class="row"><div><div class="t">${esc(r.name)}${locked ? ' <span class="badge">🔒 block</span>' : ''}</div><div class="s">${r.exercises.length} exercise${r.exercises.length === 1 ? '' : 's'} · ${r.exercises.map((e) => e.name.split(' - ')[0]).slice(0, 3).map(esc).join(', ')}${r.exercises.length > 3 ? '…' : ''}${last ? ` · last ${fmtShort(last)}` : ''}</div></div></div>
           <div class="actions"><button class="btn primary sm" data-act="tr-routine-start" data-id="${r.id}" ${w ? 'disabled' : ''}>Start</button><button class="btn secondary sm" data-act="tr-routine-edit" data-id="${r.id}">Edit</button></div></div>`; }).join('')
         : `<div class="empty">No routines yet. Create one, or finish a workout and save it as a routine.</div>`}
       </section>
@@ -188,7 +205,8 @@ export function initTrain(ctx) {
           <button class="check" data-act="tr-set-done" ${d} aria-label="Complete set">✓</button></div>`;
       }).join('');
       const cols = mode === 'strength' ? [wU(), 'Reps'] : mode === 'timed' ? [wU(), 'Sec'] : mode === 'cardio' ? ['Min', dU()] : ['Min', 'Effort'];
-      const hint = ex.suggest ? ` · <span class="hint-next">hit target → try ${toD(ex.suggest)} ${wU()}</span>` : (ex.targetReps ? ` · target ${esc(ex.targetReps)}${mode === 'strength' ? ' reps' : ''}` : '');
+      const hint = ex.blockHint ? ` · <span class="hint-next" style="${ex.blockHint.kind === 'behind' ? 'color:var(--carbs)' : ''}">${esc(ex.blockHint.text)}</span>`
+        : ex.suggest ? ` · <span class="hint-next">hit target → try ${toD(ex.suggest)} ${wU()}</span>` : (ex.targetReps ? ` · target ${esc(ex.targetReps)}${mode === 'strength' ? ' reps' : ''}` : '');
       return `<section class="card exblock" data-ex="${ex.key}">
         <div class="exname"><button style="text-align:left;font:inherit;color:inherit" data-act="tr-ex-info" data-id="${esc(ex.exerciseId)}">${esc(ex.name)}</button><button data-act="tr-ex-menu" data-key="${ex.key}" aria-label="Exercise options">⋯</button></div>
         <div class="prev">${ex.lastSummary ? `Last time: ${esc(ex.lastSummary)} · ${fmtShort(ex.lastDate)}` : 'First time logging this one'}${hint}</div>
@@ -211,7 +229,7 @@ export function initTrain(ctx) {
   }
 
   /* ---------- Sheets ---------- */
-  const isTall = (sh) => ['tr-pick', 'tr-routine', 'tr-ex', 'tr-wo', 'tr-import', 'tr-programs', 'tr-program'].includes(sh.type);
+  const isTall = (sh) => ['tr-pick', 'tr-routine', 'tr-ex', 'tr-wo', 'tr-import', 'tr-programs', 'tr-program', 'tr-block-new', 'tr-block'].includes(sh.type);
 
   function sheetHTML(sh) {
     switch (sh.type) {
@@ -227,6 +245,8 @@ export function initTrain(ctx) {
       case 'tr-programs': return sheetPrograms(sh);
       case 'tr-program': return sheetProgram(sh);
       case 'tr-quick': return sheetQuick(sh);
+      case 'tr-block-new': return sheetBlockNew(sh);
+      case 'tr-block': return sheetBlock(sh);
       default: return '';
     }
   }
@@ -404,6 +424,115 @@ export function initTrain(ctx) {
       <button class="btn danger" style="margin-top:8px" data-act="tr-ex-remove" data-key="${sh.key}">Remove from workout</button>`;
   }
 
+  /* ---------- Training block ---------- */
+  const blockActive = () => S().block;
+  function focusRows(blk, { compact = false } = {}) {
+    const t = todayISO();
+    return (blk.focus || []).map((id) => {
+      const e = exById(id); const p = T.focusProgress(S().workouts, blk, id, t);
+      const name = (e?.name || id).split(' - ')[0];
+      const goalPct = p.goal && p.baseline ? ((p.goal / p.baseline) - 1) * 100 : 0;
+      const fill = p.pct != null && goalPct > 0 ? Math.max(0, Math.min(100, (p.pct / goalPct) * 100)) : 0;
+      const mark = p.targetPct != null && goalPct > 0 ? Math.max(0, Math.min(100, (p.targetPct / goalPct) * 100)) : 0;
+      const st = p.status === 'no-data' ? (p.baseline ? 'no sessions yet' : 'baseline set on first session') : `${p.pct >= 0 ? '+' : ''}${p.pct}% · ${p.status.replace('-', ' ')}`;
+      return `<div class="focusrow"><span class="n">${esc(name)}</span><span class="st ${p.status}">${st}</span>
+        <span class="track"><i style="width:${fill}%"></i>${p.targetPct != null ? `<b style="left:${mark}%"></b>` : ''}</span>
+        ${compact ? '' : `<span class="sub">${p.baseline ? `Baseline ${toD(p.baseline)} → now ${p.current ? toD(p.current) : '–'} · target now +${p.targetPct ?? 0}% · block goal ${toD(p.goal)} ${wU()} e1RM` : 'Log it once to set the baseline.'}${p.stalls >= 2 ? ` · <b style="color:var(--carbs)">stalled ${p.stalls}×</b>` : ''}</span>`}</div>`;
+    }).join('');
+  }
+  function blockNotices(blk) {
+    const pos = T.blockPosition(blk, todayISO()); const out = [];
+    if (pos.done) out.push(['good', 'Block complete. Review it and plan the next one — same routines, fresh baselines.']);
+    else if (pos.isDeload) out.push(['good', 'Deload week: loads around 60%, same movements, stop well short of failure. You should leave the gym fresh.']);
+    for (const id of blk.focus || []) {
+      const p = T.focusProgress(S().workouts, blk, id, todayISO()); const name = (exById(id)?.name || id).split(' - ')[0];
+      if (p.stalls >= 2) out.push(['warn', `${name} has stalled ${p.stalls} sessions in a row. Drop 10% for one session, then build back up.`]);
+      else if (p.status === 'behind' && !pos.isDeload) out.push(['warn', `${name} is ${Math.round((p.targetPct - p.pct) * 10) / 10}% behind pace. Add a rep at the same weight next time, or hold the weight and own every rep.`]);
+    }
+    return out.map(([k, t]) => `<div class="notice ${k}"><span>${k === 'warn' ? '⚠️' : '✅'}</span><span>${esc(t)}</span></div>`).join('');
+  }
+  function blockCardHTML(activeW) {
+    const blk = blockActive();
+    if (!blk) {
+      if (!Object.keys(S().routines).length) return '';
+      return `<section class="card row"><div><div style="font-weight:700">Plan a training block</div><div class="small muted">Lock in routines for a few weeks, set a target rate, track focus lifts, deload at the end.</div></div><button class="btn primary sm" data-act="tr-block-new">Plan</button></section>`;
+    }
+    const pos = T.blockPosition(blk, todayISO());
+    const nextId = T.nextRoutineId(blk, S().workouts); const next = nextId && S().routines[nextId];
+    return `<section class="card blockcard">
+      <div class="row"><div><div class="wk">${pos.done ? 'Block complete' : `Week ${pos.week} of ${pos.weeks}${pos.isDeload ? ' · deload' : ''}`}</div><div class="nm">${esc(blk.name)}</div></div><button class="btn secondary sm" data-act="tr-block">Details</button></div>
+      ${!pos.done && next ? `<div class="row" style="gap:10px;margin-bottom:6px"><div><div class="small muted">Up next</div><div style="font-weight:700">${esc(next.name)}</div></div><button class="btn primary sm" data-act="tr-block-start" data-id="${next.id}" ${activeW ? 'disabled' : ''}>Start</button></div>` : ''}
+      ${focusRows(blk, { compact: true })}
+      ${blockNotices(blk)}
+    </section>`;
+  }
+  function blockCandidates(routineIds) {
+    const seen = new Map();
+    for (const rid of routineIds) for (const e of (S().routines[rid]?.exercises || [])) {
+      if ((e.mode || 'strength') !== 'strength') continue;
+      const lib = exById(e.exerciseId);
+      const score = (e.progress ? 2 : 0) + (lib?.mechanic === 'compound' ? 1 : 0) + (lib?.popular >= 0 ? 1 : 0);
+      if (!seen.has(e.exerciseId) || seen.get(e.exerciseId).score < score) seen.set(e.exerciseId, { id: e.exerciseId, name: e.name, score });
+    }
+    return [...seen.values()].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  }
+  function sheetBlockNew(sh) {
+    const d = sh.draft;
+    const routines = Object.values(S().routines).sort((a, b) => a.name.localeCompare(b.name));
+    const cands = blockCandidates(d.routineIds);
+    const RATES = [[2.5, 'Intermediate'], [5, 'Steady'], [7.5, 'Novice'], [10, 'Aggressive']];
+    return `${head(sh.edit ? 'Edit block' : 'Plan a block')}
+      <label class="field"><span>Name</span><input class="input" data-tr-bname value="${esc(d.name)}" placeholder="e.g. Winter strength block" /></label>
+      <div class="field"><span>Routines, in rotation order (tap to add)</span>
+        <div class="orderlist">${routines.map((r) => { const i = d.routineIds.indexOf(r.id); return `<button class="exrow ${i >= 0 ? 'sel' : ''}" data-act="tr-bsel" data-id="${r.id}"><span><div class="n">${esc(r.name)}</div><div class="s">${r.exercises.length} exercises</div></span><span class="pick">${i >= 0 ? i + 1 : ''}</span></button>`; }).join('')}</div></div>
+      <div class="field"><span>Length</span><div class="seg">${[4, 6, 8, 12].map((v) => `<button class="${d.weeks === v ? 'on' : ''}" data-act="tr-bweeks" data-v="${v}">${v} wk</button>`).join('')}</div></div>
+      <div class="field"><span>Target gain in estimated 1RM, per two weeks</span><div class="seg">${RATES.map(([v]) => `<button class="${d.ratePct === v ? 'on' : ''}" data-act="tr-brate" data-v="${v}">${v}%</button>`).join('')}</div>
+        <p class="tiny muted" style="margin-top:6px">${RATES.find(([v]) => v === d.ratePct)?.[1]}. Estimated 1RM counts both weight and reps, so one extra rep at the same weight is about a 3% gain. 10% per fortnight is realistic only in the first months of training; most people hold 2.5–5%. Lower it if you find yourself behind every week.</p></div>
+      <label class="row small" style="margin-bottom:14px"><span>Make the final week a deload (~60% loads)</span><input type="checkbox" data-tr-bdeload ${d.deload ? 'checked' : ''} style="width:20px;height:20px" /></label>
+      <div class="field"><span>Focus lifts to track (up to 6)</span>
+        ${cands.length ? cands.map((c) => `<button class="exrow ${d.focus.includes(c.id) ? 'sel' : ''}" data-act="tr-bfocus" data-id="${esc(c.id)}"><span class="n">${esc(c.name)}</span><span class="pick">${d.focus.includes(c.id) ? '✓' : ''}</span></button>`).join('') : `<p class="muted small">Pick routines first.</p>`}</div>
+      <button class="btn primary" data-act="tr-block-save">${sh.edit ? 'Save changes' : 'Start block'}</button>`;
+  }
+  function readBlockDraft(sh) { const n = document.querySelector('[data-tr-bname]'); if (n) sh.draft.name = n.value.trim(); const dl = document.querySelector('[data-tr-bdeload]'); if (dl) sh.draft.deload = dl.checked; }
+  function sheetBlock(sh) {
+    const blk = blockActive(); if (!blk) return `${head('Block')}<p class="muted small">No active block.</p>`;
+    const pos = T.blockPosition(blk, todayISO());
+    const nextId = T.nextRoutineId(blk, S().workouts);
+    return `${head(esc(blk.name))}
+      <p class="muted small" style="margin:-6px 0 12px">${pos.done ? `Finished ${fmtShort(pos.endDate)}` : `Week ${pos.week} of ${pos.weeks} · ${fmtShort(blk.startDate)} → ${fmtShort(pos.endDate)}`} · ${blk.ratePct}% per two weeks${blk.deload ? ' · deload in week ' + blk.weeks : ''}</p>
+      <div class="card-title">Rotation</div>
+      ${(blk.routineIds || []).map((id, i) => { const r = S().routines[id]; if (!r) return ''; const last = routineLastDone(r); return `<div class="row small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${i + 1}. ${esc(r.name)}${id === nextId && !pos.done ? ' <span class="badge">up next</span>' : ''}</span><span class="muted">${last ? `last ${fmtShort(last)}` : 'not yet'}</span></div>`; }).join('')}
+      <div class="card-title" style="margin-top:14px">Focus lifts</div>
+      ${focusRows(blk)}
+      ${blockNotices(blk)}
+      <div style="height:12px"></div>
+      ${pos.done ? `<button class="btn primary" data-act="tr-block-next">Plan the next block</button>` : `<button class="btn secondary" data-act="tr-block-edit">Edit block</button>`}
+      <button class="btn ghost" style="margin-top:6px;color:var(--danger)" data-act="tr-block-end">${pos.done ? 'Archive block' : 'End block early'}</button>`;
+  }
+  function newBlockDraft(from = null) {
+    return { id: uid(), name: from?.name || '', routineIds: from ? [...(from.routineIds || [])].filter((id) => S().routines[id]) : [], weeks: from?.weeks || 8, ratePct: from?.ratePct ?? 10, deload: from ? !!from.deload : true, focus: from ? [...(from.focus || [])] : [] };
+  }
+  function saveBlock(sh) {
+    readBlockDraft(sh); const d = sh.draft;
+    if (!d.routineIds.length) { toast('Pick at least one routine'); return; }
+    if (!d.name) d.name = `${d.weeks}-week block`;
+    const start = sh.edit && S().block ? S().block.startDate : todayISO();
+    const baseline = sh.edit && S().block ? { ...(S().block.baseline || {}) } : {};
+    for (const id of d.focus) if (!baseline[id]) { const b = T.baselineFor(S().workouts, id, start); if (b) baseline[id] = b; }
+    S().block = { id: sh.edit && S().block ? S().block.id : d.id, name: d.name, startDate: start, weeks: d.weeks, ratePct: d.ratePct, deload: d.deload, routineIds: d.routineIds, focus: d.focus.slice(0, 6), baseline, createdAt: Date.now() };
+    touch(S(), 'block'); closeSheet(); ctx.commit(); toast(sh.edit ? 'Block updated' : 'Block started');
+  }
+  function endBlock() {
+    const blk = S().block; if (!blk) return;
+    const t = todayISO();
+    const summary = (blk.focus || []).map((id) => { const p = T.focusProgress(S().workouts, blk, id, t); return { exerciseId: id, name: exById(id)?.name || id, baseline: p.baseline, final: p.current, pct: p.pct }; });
+    S().blocks[blk.id] = { ...blk, endedAt: Date.now(), endDate: t, summary }; touch(S(), 'blocks', blk.id);
+    S().block = null; touch(S(), 'block');
+    closeSheet(); ctx.commit();
+    const gains = summary.filter((x) => x.pct != null);
+    toast(gains.length ? `Block saved · avg ${gains.reduce((a, x) => a + x.pct, 0) / gains.length >= 0 ? '+' : ''}${Math.round((gains.reduce((a, x) => a + x.pct, 0) / gains.length) * 10) / 10}% on focus lifts` : 'Block saved');
+  }
+
   /* ---------- Programs ---------- */
   const FOCUS = [['', 'All'], ['strength', 'Strength'], ['upper', 'Upper body'], ['functional', 'Functional'], ['bodyweight', 'Bodyweight'], ['balance', 'Balance'], ['mobility', 'Mobility'], ['yoga', 'Yoga'], ['cardio', 'Cardio']];
   function programAdded(p) { return Object.values(S().routines).some((r) => r.programId === p.id); }
@@ -470,13 +599,16 @@ export function initTrain(ctx) {
     const weeks = T.workoutsPerWeek(ws, 8);
     const max = Math.max(1, ...Object.values(byMuscle));
     const order = EX.GROUPS.filter((g) => byMuscle[g]);
-    if (!Object.keys(ws).length) return '';
+    if (!Object.keys(ws).length && !S().block) return '';
+    const blk = S().block;
+    const blockCard = blk ? `<section class="card"><div class="row"><div class="card-title" style="margin:0">Block · ${esc(blk.name)}</div><span class="small muted">week ${T.blockPosition(blk, t).week} of ${blk.weeks}</span></div>${focusRows(blk)}</section>` : '';
+    if (!Object.keys(ws).length) return blockCard;
     const tot = T.activityTotals(ws, N.addDays(t, -6), t);
     const lines = [];
     if (tot.cardioSec) lines.push(`🏃 Cardio <b class="num">${Math.round(tot.cardioSec / 60)} min</b>${tot.cardioKm ? ` · <b class="num">${toDist(tot.cardioKm)} ${dU()}</b>` : ''}`);
     if (tot.sessionSec) lines.push(`🧘 Yoga & mobility <b class="num">${Math.round(tot.sessionSec / 60)} min</b>`);
     if (tot.holdSec) lines.push(`⏱ Holds <b class="num">${Math.round(tot.holdSec / 60)} min</b>`);
-    return `<section class="card"><div class="card-title">Training · last 7 days</div>
+    return `${blockCard}<section class="card"><div class="card-title">Training · last 7 days</div>
       ${lines.length ? `<div class="small" style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px">${lines.map((l) => `<div>${l}</div>`).join('')}</div>` : ''}
       ${order.length ? `<div class="volbars">${order.map((g) => `<div class="row"><span class="small" style="width:90px">${EX.GROUP_LABEL[g]}</span><span class="bar" style="flex:1"><i style="width:${Math.round((byMuscle[g] / max) * 100)}%"></i></span><b class="small num" style="width:52px;text-align:right">${byMuscle[g]} set${byMuscle[g] === 1 ? '' : 's'}</b></div>`).join('')}</div>` : `<p class="muted small">No sets this week yet.</p>`}
       <div class="card-title" style="margin-top:14px">Workouts per week</div>
@@ -494,6 +626,13 @@ export function initTrain(ctx) {
     const c = cleanedActive(); if (!c || !c.exercises.length) { toast('Nothing to save yet'); return; }
     c.prs = T.detectPRs({ ...S().workouts, [c.id]: c }, c).map(({ exerciseId, name, type, value }) => ({ exerciseId, name, type, value }));
     S().workouts[c.id] = c; touch(S(), 'workouts', c.id);
+    const blk = S().block;
+    if (blk) {
+      blk.baseline = blk.baseline || {};
+      let changed = false;
+      for (const ex of c.exercises) if ((blk.focus || []).includes(ex.exerciseId) && !blk.baseline[ex.exerciseId]) { const best = Math.max(...T.workingSets(ex.sets).map((s) => T.e1rm(s.w, s.r))); if (best > 0) { blk.baseline[ex.exerciseId] = best; changed = true; } }
+      if (changed) touch(S(), 'block');
+    }
     // Routine templates mirror the whole workout as planned (all exercises, working-set rows), not just what got ticked.
     const planned = active();
     const routineOf = (w) => w.exercises.map((e) => ({ exerciseId: e.exerciseId, name: e.name, mode: e.mode || 'strength', sets: Math.max(1, e.sets.filter((s) => s.type !== 'warmup').length), reps: e.targetReps || '', restSec: e.restSec || 90, ...(e.progress ? { progress: e.progress } : {}) }));
@@ -556,7 +695,22 @@ export function initTrain(ctx) {
       case 'tr-back': ui.view = 'train'; ctx.render(); break;
       case 'tr-routine-start': { const r = S().routines[el.dataset.id]; if (r && !w) { EX.loadExercises().catch(() => {}); startFromRoutine(r); } break; }
       case 'tr-routine-new': openSheet({ type: 'tr-routine', draft: routineDraftFrom(null) }); break;
-      case 'tr-routine-edit': openSheet({ type: 'tr-routine', draft: routineDraftFrom(S().routines[el.dataset.id]) }); break;
+      case 'tr-routine-edit': {
+        const blk = S().block; const locked = blk && !T.blockPosition(blk, todayISO()).done && (blk.routineIds || []).includes(el.dataset.id);
+        if (locked && !confirm(`This routine is part of your current block (week ${T.blockPosition(blk, todayISO()).week} of ${blk.weeks}). Changing it mid-block makes progress harder to read. Edit anyway?`)) return;
+        openSheet({ type: 'tr-routine', draft: routineDraftFrom(S().routines[el.dataset.id]) }); break;
+      }
+      case 'tr-block-new': openSheet({ type: 'tr-block-new', draft: newBlockDraft(), edit: false }); EX.loadExercises().catch(() => {}); break;
+      case 'tr-block-next': openSheet({ type: 'tr-block-new', draft: newBlockDraft(S().block), edit: false }); S().block && (() => { const blk = S().block; const t = todayISO(); S().blocks[blk.id] = { ...blk, endedAt: Date.now(), endDate: t, summary: (blk.focus || []).map((id) => { const p = T.focusProgress(S().workouts, blk, id, t); return { exerciseId: id, name: exById(id)?.name || id, baseline: p.baseline, final: p.current, pct: p.pct }; }) }; touch(S(), 'blocks', blk.id); S().block = null; touch(S(), 'block'); ctx.save(); })(); break;
+      case 'tr-block-edit': openSheet({ type: 'tr-block-new', draft: newBlockDraft(S().block), edit: true }); break;
+      case 'tr-block': openSheet({ type: 'tr-block' }); EX.loadExercises().catch(() => {}); break;
+      case 'tr-bsel': { readBlockDraft(sh); const d = sh.draft; const i = d.routineIds.indexOf(el.dataset.id); if (i >= 0) d.routineIds.splice(i, 1); else d.routineIds.push(el.dataset.id); d.focus = d.focus.filter((id) => blockCandidates(d.routineIds).some((c) => c.id === id)); ctx.renderSheet(); break; }
+      case 'tr-bweeks': readBlockDraft(sh); sh.draft.weeks = Number(el.dataset.v); ctx.renderSheet(); break;
+      case 'tr-brate': readBlockDraft(sh); sh.draft.ratePct = Number(el.dataset.v); ctx.renderSheet(); break;
+      case 'tr-bfocus': { readBlockDraft(sh); const f = sh.draft.focus; const i = f.indexOf(el.dataset.id); if (i >= 0) f.splice(i, 1); else if (f.length < 6) f.push(el.dataset.id); else toast('Up to 6 focus lifts'); ctx.renderSheet(); break; }
+      case 'tr-block-save': saveBlock(sh); break;
+      case 'tr-block-end': if (confirm('End this block now? Its summary is kept in your history.')) endBlock(); break;
+      case 'tr-block-start': { const r = S().routines[el.dataset.id]; if (r && !w) { EX.loadExercises().catch(() => {}); startFromRoutine(r); } break; }
       case 'tr-r-add': readRoutineDraft(sh); openPicker('routine', { returnTo: sh }); break;
       case 'tr-r-move': { readRoutineDraft(sh); const i = Number(el.dataset.i), d = Number(el.dataset.d), arr = sh.draft.exercises; const j = i + d; if (j >= 0 && j < arr.length) { [arr[i], arr[j]] = [arr[j], arr[i]]; } ctx.renderSheet(); break; }
       case 'tr-r-remove': readRoutineDraft(sh); sh.draft.exercises.splice(Number(el.dataset.i), 1); ctx.renderSheet(); break;

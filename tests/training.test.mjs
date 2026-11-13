@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { e1rm, workoutSummary, activityTotals, suggestNext, exerciseBests, detectPRs, lastPerformance, e1rmHistory, setsByMuscle, workoutsPerWeek, parseCSV, detectCSV, importCSV, normalizeExerciseName, fmtDuration } from '../src/training.js';
+import { e1rm, workoutSummary, activityTotals, suggestNext, blockPosition, targetE1rm, loadForE1rm, baselineFor, focusProgress, nextRoutineId, sessionTargetKg, exerciseBests, detectPRs, lastPerformance, e1rmHistory, setsByMuscle, workoutsPerWeek, parseCSV, detectCSV, importCSV, normalizeExerciseName, fmtDuration } from '../src/training.js';
 
 const set = (w, r, extra = {}) => ({ id: Math.random().toString(36).slice(2), w, r, type: 'normal', done: true, ...extra });
 const wk = (id, date, exercises, start = 0) => ({ id, date, startedAt: start, endedAt: start + 3600000, name: 'W', exercises });
@@ -119,4 +119,34 @@ test('linear progression suggestion', () => {
   assert.equal(suggestNext([set(60, 12), set(60, 12)], '8-12', 2.5), 62.5);
   assert.equal(suggestNext([set(60, 10)], '8-12', 2.5), null);
   assert.equal(suggestNext([set(100, 5)], '5', 0), null);
+});
+
+test('block position, targets and inverse Epley', () => {
+  const b = { startDate: '2026-11-02', weeks: 8, deload: true, ratePct: 10, routineIds: ['r1', 'r2'] };
+  assert.deepEqual([blockPosition(b, '2026-11-02').week, blockPosition(b, '2026-11-16').week, blockPosition(b, '2026-12-21').week], [1, 3, 8]);
+  assert.equal(blockPosition(b, '2026-12-21').isDeload, true);
+  assert.equal(blockPosition(b, '2026-12-28').done, true);
+  assert.equal(targetE1rm(100, 10, 2), 110);
+  assert.equal(targetE1rm(100, 10, 4), 121);
+  assert.ok(Math.abs(loadForE1rm(e1rm(100, 5), 5) - 100) < 0.1);
+});
+
+test('focus progress reports ahead / on-track / behind and stalls; next routine rotates', () => {
+  const b = { startDate: '2026-11-02', weeks: 8, deload: true, ratePct: 10, routineIds: ['r1', 'r2'], baseline: {} };
+  const W = {
+    base: { ...wk('base', '2026-10-28', [{ exerciseId: 'bench', name: 'Bench', sets: [set(100, 5)] }], 1), routineId: 'r1' },
+    s1: { ...wk('s1', '2026-11-04', [{ exerciseId: 'bench', name: 'Bench', sets: [set(100, 5)] }], 2), routineId: 'r1' },
+    s2: { ...wk('s2', '2026-11-11', [{ exerciseId: 'bench', name: 'Bench', sets: [set(100, 5)] }], 3), routineId: 'r2' },
+  };
+  assert.equal(baselineFor(W, 'bench', '2026-11-02'), e1rm(100, 5));
+  b.baseline.bench = baselineFor(W, 'bench', '2026-11-02');
+  const p = focusProgress(W, b, 'bench', '2026-11-16'); // 2 weeks in, no improvement
+  assert.equal(p.status, 'behind'); assert.equal(p.pct, 0); assert.ok(p.targetPct >= 9.5); assert.equal(p.stalls, 1);
+  const W2 = { ...W, s3: { ...wk('s3', '2026-11-15', [{ exerciseId: 'bench', name: 'Bench', sets: [set(110, 5)] }], 4), routineId: 'r1' } };
+  const p2 = focusProgress(W2, b, 'bench', '2026-11-16');
+  assert.equal(p2.status, 'on-track'); assert.ok(p2.pct >= 9.8 && p2.pct <= 10.1); assert.equal(p2.stalls, 0);
+  assert.equal(nextRoutineId(b, W2), 'r2');
+  assert.equal(nextRoutineId(b, {}), 'r1');
+  assert.ok(Math.abs(sessionTargetKg({ progress: p2, reps: 5, lastTopKg: 110, isDeload: false }) - 110) < 0.6);
+  assert.equal(sessionTargetKg({ progress: p2, reps: 5, lastTopKg: 110, isDeload: true }), 66);
 });

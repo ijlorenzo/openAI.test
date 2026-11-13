@@ -29,9 +29,11 @@ export function defaultState() {
     routines: {}, // id -> routine template
     customExercises: [],
     activeWorkout: null,
+    block: null, // active training block
+    blocks: {}, // finished blocks by id
     trainPrefs: { restSec: 90 },
-    stamps: { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, profile: 0, targets: 0, usdaKey: 0, lastCheckin: 0, recents: 0, activeWorkout: 0, trainPrefs: 0 },
-    tombstones: { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {} },
+    stamps: { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, blocks: {}, profile: 0, targets: 0, usdaKey: 0, lastCheckin: 0, recents: 0, activeWorkout: 0, trainPrefs: 0, block: 0 },
+    tombstones: { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, blocks: {} },
     sync: { provider: null, fileId: null, lastSync: 0 },
   };
 }
@@ -41,8 +43,9 @@ export function normalize(state) {
   const d = defaultState();
   const out = { ...d, ...state };
   out.stamps = { ...d.stamps, ...(state.stamps || {}) };
-  for (const k of ['entries', 'weights', 'customFoods', 'workouts', 'routines', 'customExercises']) out.stamps[k] = { ...(state.stamps?.[k] || {}) };
-  out.tombstones = { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, ...(state.tombstones || {}) };
+  for (const k of ['entries', 'weights', 'customFoods', 'workouts', 'routines', 'customExercises', 'blocks']) out.stamps[k] = { ...(state.stamps?.[k] || {}) };
+  out.tombstones = { entries: {}, weights: {}, customFoods: {}, workouts: {}, routines: {}, customExercises: {}, blocks: {}, ...(state.tombstones || {}) };
+  out.blocks = state.blocks || {};
   out.workouts = state.workouts || {};
   out.routines = state.routines || {};
   out.customExercises = state.customExercises || [];
@@ -85,7 +88,7 @@ export function mergeStates(localIn, remoteIn) {
   const maxTomb = (g, k) => Math.max(L.tombstones[g][k] || 0, R.tombstones[g][k] || 0);
 
   const empty = (v) => v == null || v === '' || (Array.isArray(v) && v.length === 0);
-  for (const g of ['profile', 'targets', 'usdaKey', 'lastCheckin', 'recents', 'activeWorkout', 'trainPrefs']) {
+  for (const g of ['profile', 'targets', 'usdaKey', 'lastCheckin', 'recents', 'activeWorkout', 'trainPrefs', 'block']) {
     // A missing value never beats a present one, whatever the stamps say.
     if (empty(L[g]) && !empty(R[g])) out[g] = R[g];
     else if (empty(R[g]) && !empty(L[g])) out[g] = L[g];
@@ -148,7 +151,7 @@ export function mergeStates(localIn, remoteIn) {
   }
 
   // Keyed maps: workouts and routines.
-  for (const g of ['workouts', 'routines']) {
+  for (const g of ['workouts', 'routines', 'blocks']) {
     const ids = new Set([...Object.keys(L[g]), ...Object.keys(R[g]), ...Object.keys(L.tombstones[g]), ...Object.keys(R.tombstones[g])]);
     for (const id of ids) {
       const lu = L.stamps[g][id] || 0, ru = R.stamps[g][id] || 0;

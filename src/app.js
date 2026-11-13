@@ -3,6 +3,7 @@ import { FOODS } from './foods.js';
 import { indexFood, search } from './search.js';
 import { load, save, reset, uid, MEALS, exportJSON, importJSON, touch, bury } from './store.js';
 import { createSync } from './sync.js';
+import { redirectUri } from './drive.js';
 import { GOOGLE_CLIENT_ID } from './config.js';
 import { initTrain } from './train.js';
 import { lookupBarcode, searchOnline, normalizeBarcode } from './lookup.js';
@@ -422,8 +423,15 @@ function fmtAgo(ts) {
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
   return fmtShort(N.toISODate(new Date(ts)));
 }
+function syncNudgeDue() {
+  if (!clientId() || sync.connected()) return false;
+  try { if (localStorage.getItem('macrolog.syncNudgeDismissed')) return false; } catch { return false; }
+  const days = Object.keys(S.entries).length ? new Set(Object.keys(S.entries)).size : 0;
+  return days >= 3 || Object.keys(S.workouts || {}).length >= 3;
+}
 function syncPillHTML() {
   const st = sync.status();
+  if (st.state === 'off' && syncNudgeDue()) return `<div class="syncpill" data-sync-pill style="background:var(--accent-soft)"><span><b>Back up your data.</b> It lives only on this device. Connect Google Drive to keep it safe and use it elsewhere.</span><span style="display:flex;gap:6px;flex-direction:column"><button data-act="sync-connect">Connect</button><button class="muted" style="font-weight:600;color:var(--muted)" data-act="sync-nudge-later">Later</button></span></div>`;
   if (st.state === 'needs-auth') return `<div class="syncpill" data-sync-pill><span><b>Drive sync paused.</b> Sign in again to keep syncing.</span><button data-act="sync-connect">Reconnect</button></div>`;
   if (st.state === 'error') return `<div class="syncpill" data-sync-pill><span><b>Sync problem.</b> ${esc(st.message)}</span><button data-act="sync-now">Retry</button></div>`;
   return `<span data-sync-pill hidden></span>`;
@@ -433,13 +441,16 @@ function syncCardHTML() {
   const hasLocalId = (() => { try { return !!localStorage.getItem(CLIENT_ID_KEY); } catch { return false; } })();
   let body;
   if (!clientId()) {
-    body = `<p class="small" style="margin-bottom:10px">Keep your data in a private folder of <b>your own Google Drive</b> and use the app on more than one device. This deployment has no Google client ID yet. Paste one here (see the setup guide in the repo's docs folder) or ask whoever hosts the app to add it.</p>
-      <form data-form="clientid" class="row" style="gap:8px"><input class="input" name="id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" autocapitalize="off" spellcheck="false" /><button class="btn secondary" type="submit" style="width:auto">Save</button></form>`;
+    body = `<div class="syncstatus" style="margin-bottom:10px"><i class="dot"></i><span>Your data lives only on this device</span></div>
+      <p class="small" style="margin-bottom:12px">Back it up to a private folder in <b>your own Google Drive</b> and use the app on your phone and laptop. Nothing is stored anywhere else and nobody else can see it. One-time setup by whoever runs this copy of the app: create a free Google client ID (about 10 minutes, guided).</p>
+      <button class="btn primary" data-act="sheet-setup">Set up Google Drive sync</button>
+      <p class="tiny muted" style="margin-top:10px">Already have a client ID? The setup screen has a place to paste it. <a href="privacy.html" target="_blank" rel="noopener">Privacy</a></p>`;
   } else if (st.state === 'off') {
-    body = `<p class="small" style="margin-bottom:12px">Your data is stored only on this device. Connect Google Drive to back it up to a private app folder in <b>your own</b> Drive and sync it across devices. Nothing is stored anywhere else.</p>
+    body = `<div class="syncstatus" style="margin-bottom:10px"><i class="dot"></i><span>Your data lives only on this device</span></div>
+      <p class="small" style="margin-bottom:12px">Connect your Google account and the app keeps one backup file in a private folder of <b>your own</b> Drive. Open the app on another device, tap <b>Restore from Google Drive</b>, and everything is there. Nothing is stored anywhere else.</p>
       <button class="btn primary" data-act="sync-connect">Connect Google Drive</button>
       ${st.message ? `<p class="small" style="margin-top:8px;color:var(--danger)">${esc(st.message)}</p>` : ''}
-      <p class="tiny muted" style="margin-top:10px">Asks only for the app's own folder in Drive. <a href="privacy.html" target="_blank" rel="noopener">Privacy</a>${hasLocalId ? ' · <button class="ghost" style="color:var(--accent);font-weight:600" data-act="clientid-clear">Clear client ID</button>' : ''}</p>`;
+      <p class="tiny muted" style="margin-top:10px">Google will ask you to sign in and allow access to the app's own folder only. <a href="privacy.html" target="_blank" rel="noopener">Privacy</a> · <button class="ghost" style="color:var(--accent);font-weight:600" data-act="sheet-setup">Setup details</button>${hasLocalId ? ' · <button class="ghost" style="color:var(--accent);font-weight:600" data-act="clientid-clear">Clear client ID</button>' : ''}</p>`;
   } else {
     const label = st.state === 'syncing' ? 'Syncing…'
       : st.state === 'needs-auth' ? 'Sign-in expired. Reconnect to keep syncing.'
@@ -525,6 +536,7 @@ function renderSheet() {
   else if (sh.type === 'targets') inner = sheetTargets();
   else if (sh.type === 'profile') inner = sheetProfile(sh);
   else if (sh.type === 'import') inner = sheetImport();
+  else if (sh.type === 'setup') { inner = sheetSetup(); tall = true; }
   else if (sh.type === 'scan') inner = sheetScan(sh);
   else if (sh.type.startsWith('tr-')) { inner = train.sheetHTML(sh); tall = train.isTall(sh); }
   const enter = ui.sheetFresh ? 'enter' : '';
@@ -914,6 +926,32 @@ function sheetProfile() {
     </form>`;
 }
 
+function sheetSetup() {
+  const origin = location.origin;
+  const redirect = redirectUri();
+  const current = clientId();
+  const copyRow = (label, value, extra = '') => `<div class="field" style="margin-bottom:10px"><span>${label}</span>
+    <div class="row" style="gap:8px"><code class="input" style="font-size:13px;overflow:auto;white-space:nowrap;display:block">${esc(value)}</code><button class="btn secondary sm" data-act="copy" data-copy="${esc(value)}">Copy</button></div>${extra}</div>`;
+  const step = (n, title, body) => `<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)"><span class="num-badge" style="width:28px;height:28px;border-radius:9px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:800;flex-shrink:0">${n}</span><div style="flex:1"><div style="font-weight:700;margin-bottom:4px">${title}</div><div class="small muted">${body}</div></div></div>`;
+  const link = (href, text) => `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+  return `${head('Google Drive sync setup')}
+    <p class="small" style="margin:-6px 0 12px">Done once by whoever runs this copy of the app. It creates a free Google “client ID” that tells Google which site is allowed to ask people to sign in. Each person's data still goes only to <b>their own</b> Drive. ${current ? '<b>A client ID is already set.</b>' : ''}</p>
+    ${step(1, 'Create a Google Cloud project', `Open the ${link('https://console.cloud.google.com/projectcreate', 'project creation page')}, name it <b>Macro Log</b>, create it, and make sure it is selected at the top of the console.`)}
+    ${step(2, 'Enable the Drive API', `Open the ${link('https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Google Drive API page')} and click <b>Enable</b>.`)}
+    ${step(3, 'Consent screen (“Google Auth Platform”)', `Open ${link('https://console.cloud.google.com/auth/overview', 'Google Auth Platform')} → Get started. App name <b>Macro Log</b>, your email as support contact, audience <b>External</b>. Then under <b>Data Access</b> add this scope, and under <b>Audience</b> click <b>Publish app</b> so anyone can sign in.`)}
+    ${copyRow('Scope to add', 'https://www.googleapis.com/auth/drive.appdata')}
+    ${step(4, 'Create the OAuth client', `Open ${link('https://console.cloud.google.com/apis/credentials/oauthclient', 'Create OAuth client ID')}, type <b>Web application</b>, name <b>Macro Log web</b>. Paste the two values below exactly. The redirect must keep its trailing slash.`)}
+    ${copyRow('Authorized JavaScript origin', origin)}
+    ${copyRow('Authorized redirect URI', redirect)}
+    ${step(5, 'Paste the client ID here', `Copy the <b>Client ID</b> Google shows (it ends in <code>.apps.googleusercontent.com</code>; there is no secret to copy) and save it below. Saving here applies to this device. To apply it to everyone using your deployment, also put it in <code>src/config.js</code> and push.`)}
+    <form data-form="clientid" style="margin-top:4px">
+      <div class="row" style="gap:8px"><input class="input" name="id" placeholder="xxxxxxxx.apps.googleusercontent.com" value="${esc(current || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" /><button class="btn primary" type="submit" style="width:auto">Save</button></div>
+    </form>
+    ${current ? `<button class="btn secondary" style="margin-top:10px" data-act="copy" data-copy="export const GOOGLE_CLIENT_ID = '${esc(current)}';">Copy line for src/config.js</button>
+      <button class="btn primary" style="margin-top:8px" data-act="sync-connect">Connect Google Drive now</button>` : ''}
+    <p class="tiny muted" style="margin-top:12px">If Google shows “redirect_uri_mismatch” or “origin_mismatch”, the two values in step 4 do not match exactly. Copy them again from here. The full guide is in the repo under docs/google-drive-setup.md.</p>`;
+}
+
 function sheetImport() {
   return `${head('Import backup')}
     <p class="small muted" style="margin:-6px 0 12px">Choose a Macro Log JSON export. This replaces the data on this device.</p>
@@ -1054,6 +1092,15 @@ document.addEventListener('click', (ev) => {
     case 'sheet-targets': openSheet({ type: 'targets' }); break;
     case 'sheet-profile': openSheet({ type: 'profile' }); break;
     case 'sheet-import': openSheet({ type: 'import' }); break;
+    case 'sheet-setup': openSheet({ type: 'setup' }); break;
+    case 'copy': {
+      const v = el.dataset.copy;
+      const done = () => toast('Copied');
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(v).then(done, () => { prompt('Copy this value', v); });
+      else prompt('Copy this value', v);
+      break;
+    }
+    case 'sync-nudge-later': try { localStorage.setItem('macrolog.syncNudgeDismissed', '1'); } catch { /* ignore */ } render(); break;
     case 'targets-recalc': S.targets = N.targetsFromProfile(S.profile); touch(S, 'targets'); closeSheet(); commit(); toast('Recalculated'); break;
     case 'units': S.profile.units = el.dataset.v; touch(S, 'profile'); commit(); break;
     case 'sync-connect': if (!sync.connect()) toast(sync.status().message || 'Add a Google client ID in Settings first'); break;
@@ -1152,6 +1199,7 @@ document.addEventListener('submit', (ev) => {
     if (!/\.apps\.googleusercontent\.com$/.test(id)) { toast('That does not look like a Google client ID'); return; }
     try { localStorage.setItem(CLIENT_ID_KEY, id); } catch { /* ignore */ }
     sync.refreshStatus(); render(); toast('Client ID saved');
+    if (ui.sheet?.type === 'setup') renderSheet();
   } else if (kind === 'weight') {
     const kg = fromDisplayW(num(g('w')));
     if (!(kg > 20 && kg < 400)) { toast('That weight looks off'); return; }

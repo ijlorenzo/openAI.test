@@ -1,5 +1,7 @@
 # Enabling Google Drive sync
 
+**Shortcut:** the app has this guide built in with your exact URLs pre-filled and copy buttons. Open Settings → Sync → **Set up Google Drive sync**. The steps below are the same.
+
 Macro Log can keep each person's data in a private folder of **their own** Google Drive. No server is involved and nothing is stored centrally. To turn this on for your deployment you create one free OAuth client in Google Cloud and paste its ID into the app. About ten minutes.
 
 ## 1. Create a project and enable the Drive API

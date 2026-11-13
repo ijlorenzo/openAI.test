@@ -347,3 +347,20 @@ a { color: var(--accent); }
 .quickrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .setgrid.cardio { grid-template-columns: 36px 1fr 1fr 1fr 44px; }
 .hint-next { color: var(--accent); font-weight: 700; }
+
+/* ---------- Training block ---------- */
+.blockcard { padding: 16px; }
+.blockcard .wk { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.blockcard .nm { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin: 2px 0 10px; }
+.focusrow { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.focusrow .n { font-weight: 600; font-size: 14px; }
+.focusrow .st { font-size: 12px; font-weight: 700; justify-self: end; }
+.focusrow .st.ahead { color: var(--accent); } .focusrow .st.on-track { color: var(--protein); } .focusrow .st.behind { color: var(--carbs); } .focusrow .st.no-data { color: var(--muted); }
+.focusrow .track { grid-column: 1 / -1; position: relative; height: 8px; border-radius: 99px; background: var(--ring-track); overflow: visible; }
+.focusrow .track > i { position: absolute; left: 0; top: 0; height: 100%; border-radius: 99px; background: var(--accent); }
+.focusrow .track > b { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--text); opacity: .6; border-radius: 2px; }
+.focusrow .sub { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.notice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; background: var(--card-2); font-size: 13px; margin-top: 8px; }
+.notice.warn { background: rgba(245,158,11,.14); }
+.notice.good { background: var(--accent-soft); }
+.orderlist .exrow .pick { border-radius: 10px; font-weight: 800; font-size: 13px; }

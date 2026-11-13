@@ -287,3 +287,88 @@ export function normalizeExerciseName(name) {
   if (m) s = `${m[2]} ${m[1]}`;
   return s.replace(/\s+/g, ' ').toLowerCase();
 }
+
+/* ------------------------------------------------------------------ */
+/* Training blocks: a locked plan with a target rate and a deload       */
+/* ------------------------------------------------------------------ */
+import { addDays as _addDays, daysBetween as _daysBetween } from './nutrition.js';
+
+/** Where we are in the block. Week is 1-based; the final week is the deload when enabled. */
+export function blockPosition(block, today) {
+  const daysIn = Math.max(0, _daysBetween(block.startDate, today));
+  const week = Math.min(block.weeks, Math.floor(daysIn / 7) + 1);
+  const done = daysIn >= block.weeks * 7;
+  const isDeload = !!block.deload && week === block.weeks && !done;
+  return { week, weeks: block.weeks, daysIn, done, isDeload, endDate: _addDays(block.startDate, block.weeks * 7 - 1) };
+}
+
+/** Target e1RM after `weeks` weeks at ratePct per two weeks, compounding. */
+export function targetE1rm(baseline, ratePct, weeks) {
+  if (!(baseline > 0)) return 0;
+  return Math.round(baseline * Math.pow(1 + ratePct / 100, weeks / 2) * 10) / 10;
+}
+
+/** Load that gives a target e1RM at `reps` (inverse Epley). */
+export function loadForE1rm(e1rmTarget, reps) {
+  if (!(e1rmTarget > 0) || !(reps > 0)) return 0;
+  return reps === 1 ? e1rmTarget : e1rmTarget / (1 + reps / 30);
+}
+
+/** Best e1RM in the window before the block started (so the plan starts from reality). */
+export function baselineFor(workouts, exerciseId, startDate, lookbackDays = 28) {
+  const from = _addDays(startDate, -lookbackDays);
+  let best = 0;
+  for (const w of Object.values(workouts)) {
+    if (w.date < from || w.date >= startDate) continue;
+    for (const ex of w.exercises || []) if (ex.exerciseId === exerciseId) for (const s of workingSets(ex.sets || [])) best = Math.max(best, e1rm(s.w, s.r));
+  }
+  return best || null;
+}
+
+/**
+ * Progress of one focus lift inside the block.
+ * current = best e1RM over the last two sessions in the block; stalls = consecutive
+ * recent sessions whose best e1RM did not beat the one before.
+ */
+export function focusProgress(workouts, block, exerciseId, today) {
+  const pos = blockPosition(block, today);
+  const sessions = e1rmHistory(workouts, exerciseId, 60).filter((p) => p.date >= block.startDate && p.date <= today && p.e1rm > 0);
+  // The block starts from where you actually are: the first in-block session sets the baseline;
+  // until then, recent history (block.baseline) stands in so targets can be shown.
+  const baseline = sessions.length ? sessions[0].e1rm : (block.baseline?.[exerciseId] || null);
+  const lastTwo = sessions.slice(-2);
+  const current = lastTwo.length ? Math.max(...lastTwo.map((p) => p.e1rm)) : null;
+  // Target for the training weeks only (deload week does not raise the bar).
+  const trainingWeeks = block.deload ? block.weeks - 1 : block.weeks;
+  const weeksElapsed = Math.min(trainingWeeks, pos.daysIn / 7);
+  const target = baseline ? targetE1rm(baseline, block.ratePct, weeksElapsed) : null;
+  const goal = baseline ? targetE1rm(baseline, block.ratePct, trainingWeeks) : null;
+  let stalls = 0;
+  for (let i = sessions.length - 1; i > 0; i--) { if (sessions[i].e1rm <= sessions[i - 1].e1rm + 0.01) stalls++; else break; }
+  let status = 'no-data';
+  let pct = null, targetPct = null;
+  if (baseline && current) {
+    pct = Math.round(((current / baseline) - 1) * 1000) / 10;
+    targetPct = Math.round(((target / baseline) - 1) * 1000) / 10;
+    const diff = pct - targetPct;
+    status = diff >= 1.5 ? 'ahead' : diff >= -1.5 ? 'on-track' : 'behind';
+  }
+  return { baseline, current, target, goal, pct, targetPct, status, stalls, sessions: sessions.length, isDeload: pos.isDeload, week: pos.week };
+}
+
+/** Which routine comes next in the block's rotation, given finished workouts. */
+export function nextRoutineId(block, workouts) {
+  const ids = block.routineIds || [];
+  if (!ids.length) return null;
+  const done = Object.values(workouts).filter((w) => w.routineId && ids.includes(w.routineId) && w.date >= block.startDate).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  if (!done.length) return ids[0];
+  const i = ids.indexOf(done[0].routineId);
+  return ids[(i + 1) % ids.length];
+}
+
+/** Per-session hint for a focus lift: the load that puts you on the target line at `reps`, or deload load. */
+export function sessionTargetKg({ progress, reps, lastTopKg, isDeload }) {
+  if (isDeload) return lastTopKg ? lastTopKg * 0.6 : null;
+  if (!progress || !progress.target || !(reps > 0)) return null;
+  return loadForE1rm(progress.target, reps);
+}
